@@ -3,19 +3,19 @@ import setuptools
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
+__version__ = "1.0.0"
+
 setuptools.setup(
-    name="django-snapshot-queries",
-    version="0.0.1",
-    author="Example Author",
-    author_email="author@example.com",
+    name="django-bulk-load",
+    version=__version__,
+    author="Cedar",
+    author_email="support@cedar.com",
     license="MIT",
-    description="A small example package",
+    description="Bulk load Django models",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/pypa/sampleproject",
-    project_urls={
-        "Bug Tracker": "https://github.com/pypa/sampleproject/issues",
-    },
+    url="https://github.com/cedar/django-bulk-load",
+    project_urls={},
     classifiers=[
         "Programming Language :: Python :: 3",
         "License :: OSI Approved :: MIT License",
