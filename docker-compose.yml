@@ -1,0 +1,13 @@
+version: '3'
+services:
+  test:
+    build: .
+    volumes:
+      - .:/python
+    working_dir: /python
+    depends_on:
+      - db
+  db:
+    image: postgres:10
+    environment:
+      - POSTGRES_PASSWORD=postgres
