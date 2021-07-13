@@ -5,20 +5,18 @@ on:
     branches:
       - main
 jobs:
-  run-unit-tests:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Run the tests
-        run: ./test.sh
-  check-commit-syntax:
+  pr-validator:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
         with:
           # we actually need "github.event.pull_request.commits + 1" commit
           fetch-depth: 0
-      - uses: actions/setup-node@v2.1.0
-      - run: yarn add @commitlint/cli@12.1.4 @commitlint/config-conventional
-      - run: "echo \"module.exports = {extends: ['@commitlint/config-conventional']}\" > commitlint.config.js"
-      - run: yarn run commitlint --from HEAD~${{ github.event.pull_request.commits }} --to HEAD
+      - name: Check commit syntax
+        uses: actions/setup-node@v2.1.0
+        run: |
+          yarn add @commitlint/cli@12.1.4 @commitlint/config-conventional
+          echo "module.exports = {extends: ['@commitlint/config-conventional']}" > commitlint.config.js
+          yarn run commitlint --from HEAD~${{ github.event.pull_request.commits }} --to HEAD
+      - name: Run unit tests
+        run: ./test.sh
