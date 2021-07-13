@@ -1,0 +1,13 @@
+name: GitHub tests runner
+on:
+  pull_request:
+    types: [ assigned, opened, synchronize, reopened ]
+    branches:
+      - main
+jobs:
+  Run-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Run the tests
+        run: ./test.sh
