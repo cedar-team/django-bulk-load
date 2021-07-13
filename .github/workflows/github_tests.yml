@@ -12,8 +12,9 @@ jobs:
         with:
           # we actually need "github.event.pull_request.commits + 1" commit
           fetch-depth: 0
-      - name: Check commit syntax
+      - name: Node setup
         uses: actions/setup-node@v2.1.0
+      - name: Check commit syntax
         run: |
           yarn add @commitlint/cli@12.1.4 @commitlint/config-conventional
           echo "module.exports = {extends: ['@commitlint/config-conventional']}" > commitlint.config.js
