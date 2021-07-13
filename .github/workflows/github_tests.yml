@@ -1,13 +1,24 @@
-name: GitHub tests runner
+name: GitHub PR test runner
 on:
   pull_request:
     types: [ assigned, opened, synchronize, reopened ]
     branches:
       - main
 jobs:
-  Run-unit-tests:
+  run-unit-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
       - name: Run the tests
         run: ./test.sh
+  check-commit-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          # we actually need "github.event.pull_request.commits + 1" commit
+          fetch-depth: 0
+      - uses: actions/setup-node@v2.1.0
+      - run: yarn add @commitlint/cli@12.1.4 @commitlint/config-conventional
+      - run: "echo \"module.exports = {extends: ['@commitlint/config-conventional']}\" > commitlint.config.js"
+      - run: yarn run commitlint --from HEAD~${{ github.event.pull_request.commits }} --to HEAD
