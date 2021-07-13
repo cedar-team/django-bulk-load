@@ -16,6 +16,10 @@ def create_temp_table(temp_table_name, source_table_name, column_names):
         ),
     )
 
+def copy_query(table_name: str):
+    return SQL("COPY {table_name} FROM STDIN NULL '\\N' DELIMITER '\t' CSV").format(
+        table_name=Identifier(table_name)
+    )
 
 def add_returning(query: Composable, table_name: str) -> Composable:
     return Composed(
@@ -85,6 +89,37 @@ def generate_distinct_null_condition(
 def generate_insert_query(
     table_name: str,
     loading_table_name: str,
+    ignore_conflicts: bool,
+    insert_fields: Sequence[models.Field],
+):
+    query = SQL(
+        "INSERT INTO {table_name} ({insert_column_list}) "
+        "SELECT {select_column_list} FROM {loading_table_name}"
+    ).format(
+        table_name=Identifier(table_name),
+        insert_column_list=SQL(", ").join(
+            Identifier(field.column) for field in insert_fields
+        ),
+        select_column_list=SQL(", ").join(
+            SQL(".").join((Identifier(loading_table_name), Identifier(x.column)))
+            for x in insert_fields
+        ),
+        loading_table_name=Identifier(loading_table_name),
+    )
+
+    if ignore_conflicts:
+        return Composed(
+            [
+                query,
+                SQL(" ON CONFLICT DO NOTHING"),
+            ]
+        )
+
+    return query
+
+def generate_insert_for_update_query(
+    table_name: str,
+    loading_table_name: str,
     pk_fields: Sequence[models.Field],
     insert_fields: Sequence[models.Field],
 ) -> Composable:
@@ -107,6 +142,7 @@ def generate_insert_query(
         join_clause=join_clause,
         pk_column=Identifier(pk_fields[0].column),
     )
+
 
 
 def generate_select_latest(table_name, loading_table_name, pk_fields, order_field):

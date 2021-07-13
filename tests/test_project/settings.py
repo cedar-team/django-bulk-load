@@ -11,12 +11,11 @@ https://docs.djangoproject.com/en/2.1/ref/settings/
 """
 
 import os
+import sys
+import logging
 
-# Build paths inside the project like this: os.path.join(BASE_DIR, ...)
-from collections import OrderedDict
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TEST_RUNNER = 'snapshottest.django.TestRunner'
 
 
 # Quick-start development settings - unsuitable for production
@@ -39,8 +38,14 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "tests.test_project"
 ]
 
+DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
+
+
+if len(sys.argv) > 1 and sys.argv[1] == 'test':
+    logging.disable(logging.CRITICAL)
 
 class DisableMigrations(object):
     def __contains__(self, item):
@@ -54,7 +59,6 @@ MIGRATION_MODULES = DisableMigrations()
 
 MIDDLEWARE = []
 
-ROOT_URLCONF = "tests.test_project.urls"
 
 TEMPLATES = [
     {

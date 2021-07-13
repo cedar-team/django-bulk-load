@@ -5,7 +5,7 @@ from django_bulk_load.queries import (
     SQL,
     Identifier,
     add_returning,
-    generate_insert_query,
+    generate_insert_for_update_query,
     generate_update_query,
 )
 from .test_project.models import TestComplexModel
@@ -18,7 +18,7 @@ class E2ETestBulkLoadModelsWithQueries(TestCase):
         model_meta = models[0]._meta
         table_name = model_meta.db_table
         loading_table_name = generate_table_name(table_name)
-        insert_query = generate_insert_query(
+        insert_query = generate_insert_for_update_query(
             table_name=table_name,
             loading_table_name=loading_table_name,
             insert_fields=get_fields_from_names(["integer_field"], model_meta),
@@ -39,7 +39,7 @@ class E2ETestBulkLoadModelsWithQueries(TestCase):
         model_meta = models[0]._meta
         table_name = model_meta.db_table
         loading_table_name = generate_table_name(table_name)
-        insert_query = generate_insert_query(
+        insert_query = generate_insert_for_update_query(
             table_name=table_name,
             loading_table_name=loading_table_name,
             insert_fields=get_fields_from_names(["integer_field"], model_meta),

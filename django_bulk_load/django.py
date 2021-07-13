@@ -7,8 +7,6 @@ from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.models.options import Options
 from psycopg2.extras import Json
 
-from django_json_text_field.fields import SerializedField
-
 from .utils import NULL_CHARACTER
 
 
@@ -30,9 +28,9 @@ def records_to_models(
         field.column: DjangoFieldInfo(
             field_name=field.attname,
             deserializer=(
-                field.deserializer
-                if isinstance(field, SerializedField)
-                else lambda x: x
+                field.from_db_value
+                if hasattr(field, "from_db_value")
+                else lambda value, expression, connection: value
             ),
         )
         for field in get_model_fields(model_class._meta, include_auto_fields=True)
@@ -43,7 +41,7 @@ def records_to_models(
         zipped_results = dict(zip(columns, row))
         attrs = {
             django_field_info.field_name: (
-                django_field_info.deserializer(zipped_results[column])
+                django_field_info.deserializer(zipped_results[column], None, None)
                 if column in zipped_results
                 else models.DEFERRED
             )
