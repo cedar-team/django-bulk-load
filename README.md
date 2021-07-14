@@ -1,6 +1,6 @@
 # Django Bulk Load
-Load large sets of Django models into the DB using Postgres COPY command. This is a more performant alternative
-to [bulk_create](https://docs.djangoproject.com/en/3.2/ref/models/querysets/#bulk-create) and 
+Load large batches of Django models into the DB using the Postgres COPY command. This library is a more performant 
+alternative to [bulk_create](https://docs.djangoproject.com/en/3.2/ref/models/querysets/#bulk-create) and 
 [bulk_update](https://docs.djangoproject.com/en/3.2/ref/models/querysets/#bulk-update) in Django.
 
 Note: Currently, this library only supports Postgres. Other databases may be added in the future
@@ -10,11 +10,114 @@ Note: Currently, this library only supports Postgres. Other databases may be add
 pip install django-bulk-load
 ```
 
+## Benchmarks
+### bulk_update_models vs [Django's bulk_update](https://docs.djangoproject.com/en/dev/ref/models/querysets/#bulk-update) vs [django-bulk-update](https://github.com/aykut/django-bulk-update)
+
+#### Results
+```shell
+1,000
+bulk_update (Django)
+0.45329761505126953
+bulk_update (django-bulk-update)
+0.1036691665649414
+bulk_update_models
+0.04524850845336914
+
+10,000
+bulk_update (Django)
+6.0840747356414795
+bulk_update (django-bulk-update)
+2.433042049407959
+bulk_update_models
+0.10899758338928223
+
+100,000
+bulk_update (Django)
+647.6648473739624
+bulk_update (django-bulk-update)
+619.0643970966339
+bulk_update_models
+0.9625072479248047
+
+1,000,000
+bulk_update (Django)
+Does not complete
+bulk_update (django-bulk-update)
+Does not complete
+bulk_update_models
+14.923949003219604
+```
+See this thread for information on Django performance issues.
+https://groups.google.com/g/django-updates/c/kAn992Fkk24
+
+#### Code
+```shell
+models = [TestComplexModel(id=i, integer_field=i, string_field=str(i)) for i in range(count)]
+
+def run_bulk_update_django():
+  start = time()
+  TestComplexModel.objects.bulk_update(models, fields=["integer_field", "string_field"])
+  print(time() - start)
+  
+def run_bulk_update_library():
+  start = time()
+  TestComplexModel.objects.bulk_update(models, update_fields=["integer_field", "string_field"])
+  print(time() - start)
+  
+def run_bulk_update_models():
+  start = time()
+  bulk_update_models(models)
+  print(time() - start)
+```
+
+
+### bulk_insert_models vs [Django's bulk_create](https://docs.djangoproject.com/en/dev/ref/models/querysets/#bulk-create)
+#### Results
+```
+1,000
+bulk_create
+0.048630714416503906
+bulk_insert_models
+0.03132152557373047
+
+10,000
+bulk_create
+0.45952868461608887
+bulk_insert_models
+0.1908433437347412
+
+100,000
+bulk_create
+4.875206708908081
+bulk_insert_models
+1.764514684677124
+
+1,000,000
+bulk_create
+59.16990399360657
+bulk_insert_models
+18.651455640792847
+```
+#### Code
+```shell
+models = [TestComplexModel(integer_field=i, string_field=str(i)) for i in range(count)]
+
+def run_bulk_create():
+  start = time()
+  TestComplexModel.objects.bulk_create(models)
+  print(time() - start)
+  
+def run_bulk_insert_models():
+  start = time()
+  bulk_insert_models(models)
+  print(time() - start)
+```
+
 ## API
 Just import and use the functions below. No need to change settings.py
 
 ### bulk_insert_models()
-INSERT a batch of models. It makes use of Postgres COPY command to improve speed. If a row already exist, the entire
+INSERT a batch of models. It makes use of the Postgres COPY command to improve speed. If a row already exist, the entire
 insert will fail. See bulk_load.py for descriptions of all parameters.
 
 ```python
@@ -28,7 +131,7 @@ bulk_insert_models(
 ```
 
 ### bulk_upsert_models()
-UPSERT a batch of models. Replicates [UPSERTing](https://wiki.postgresql.org/wiki/UPSERT) for a large set of models. 
+UPSERT a batch of models. It replicates [UPSERTing](https://wiki.postgresql.org/wiki/UPSERT). 
 By default, it matches existing models using the model `pk`, but you can specify matching on other fields with
 `pk_field_names`. See bulk_load.py for descriptions of all parameters.
 
@@ -46,7 +149,8 @@ bulk_upsert_models(
 ```
 
 ### bulk_update_models()
-UPDATE a batch of models. If the model is not found in the database, it is ignored. See bulk_load.py for descriptions of all parameters.
+UPDATE a batch of models. By default, it matches existing models using the model `pk`, but you can specify matching on other fields with
+`pk_field_names`. If the model is not found in the database, it is ignored. See bulk_load.py for descriptions of all parameters.
 
 ```python
 from django_bulk_load import bulk_update_models
