@@ -15,7 +15,7 @@ pip install django-bulk-load
 
 #### Results
 ```shell
-1,000
+count: 1,000
 bulk_update (Django)
 0.45329761505126953
 bulk_update (django-bulk-update)
@@ -23,7 +23,7 @@ bulk_update (django-bulk-update)
 bulk_update_models
 0.04524850845336914
 
-10,000
+count: 10,000
 bulk_update (Django)
 6.0840747356414795
 bulk_update (django-bulk-update)
@@ -31,7 +31,7 @@ bulk_update (django-bulk-update)
 bulk_update_models
 0.10899758338928223
 
-100,000
+count: 100,000
 bulk_update (Django)
 647.6648473739624
 bulk_update (django-bulk-update)
@@ -39,7 +39,7 @@ bulk_update (django-bulk-update)
 bulk_update_models
 0.9625072479248047
 
-1,000,000
+count: 1,000,000
 bulk_update (Django)
 Does not complete
 bulk_update (django-bulk-update)
@@ -74,25 +74,25 @@ def run_bulk_update_models():
 ### bulk_insert_models vs [Django's bulk_create](https://docs.djangoproject.com/en/dev/ref/models/querysets/#bulk-create)
 #### Results
 ```
-1,000
+count: 1,000
 bulk_create
 0.048630714416503906
 bulk_insert_models
 0.03132152557373047
 
-10,000
+count: 10,000
 bulk_create
 0.45952868461608887
 bulk_insert_models
 0.1908433437347412
 
-100,000
+count: 100,000
 bulk_create
 4.875206708908081
 bulk_insert_models
 1.764514684677124
 
-1,000,000
+count: 1,000,000
 bulk_create
 59.16990399360657
 bulk_insert_models
