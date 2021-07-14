@@ -16,36 +16,24 @@ pip install django-bulk-load
 #### Results
 ```shell
 count: 1,000
-bulk_update (Django)
-0.45329761505126953
-bulk_update (django-bulk-update)
-0.1036691665649414
-bulk_update_models
-0.04524850845336914
+bulk_update (Django):             0.45329761505126953
+bulk_update (django-bulk-update): 0.1036691665649414
+bulk_update_models:               0.04524850845336914
 
 count: 10,000
-bulk_update (Django)
-6.0840747356414795
-bulk_update (django-bulk-update)
-2.433042049407959
-bulk_update_models
-0.10899758338928223
+bulk_update (Django):             6.0840747356414795
+bulk_update (django-bulk-update): 2.433042049407959
+bulk_update_models:               0.10899758338928223
 
 count: 100,000
-bulk_update (Django)
-647.6648473739624
-bulk_update (django-bulk-update)
-619.0643970966339
-bulk_update_models
-0.9625072479248047
+bulk_update (Django):             647.6648473739624
+bulk_update (django-bulk-update): 619.0643970966339
+bulk_update_modelsL               0.9625072479248047
 
 count: 1,000,000
-bulk_update (Django)
-Does not complete
-bulk_update (django-bulk-update)
-Does not complete
-bulk_update_models
-14.923949003219604
+bulk_update (Django):             Does not complete
+bulk_update (django-bulk-update): Does not complete
+bulk_update_models:               14.923949003219604
 ```
 See this thread for information on Django performance issues.
 https://groups.google.com/g/django-updates/c/kAn992Fkk24
@@ -75,28 +63,20 @@ def run_bulk_update_models():
 #### Results
 ```
 count: 1,000
-bulk_create
-0.048630714416503906
-bulk_insert_models
-0.03132152557373047
+bulk_create:        0.048630714416503906
+bulk_insert_models: 0.03132152557373047
 
 count: 10,000
-bulk_create
-0.45952868461608887
-bulk_insert_models
-0.1908433437347412
+bulk_create:        0.45952868461608887
+bulk_insert_models: 0.1908433437347412
 
 count: 100,000
-bulk_create
-4.875206708908081
-bulk_insert_models
-1.764514684677124
+bulk_create:        4.875206708908081
+bulk_insert_models: 1.764514684677124
 
 count: 1,000,000
-bulk_create
-59.16990399360657
-bulk_insert_models
-18.651455640792847
+bulk_create:        59.16990399360657
+bulk_insert_models: 18.651455640792847
 ```
 #### Code
 ```shell
