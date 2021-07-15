@@ -178,3 +178,7 @@ bulk_select_model_dicts(
     skip_filter_transform=False,
 )
 ```
+
+## Contributing
+We are not accepting pull requests from anyone outside Cedar employees at this time. 
+All pull requests will be closed.

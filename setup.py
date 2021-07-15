@@ -21,7 +21,9 @@ setuptools.setup(
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    packages=setuptools.find_packages(),
+    packages=setuptools.find_packages(
+        exclude=["*.tests", "*.tests.*", "tests.*", "tests"]
+    ),
     python_requires=">=3.6",
     install_requires=[
         "django>=2.2",
