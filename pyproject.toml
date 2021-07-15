@@ -5,5 +5,5 @@ requires = [
 ]
 build-backend = "setuptools.build_meta"
 
-[semantic_release]
+[tool.semantic_release]
 version_variable = "setup.py:__version__"
