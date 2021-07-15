@@ -3,7 +3,7 @@ Load large batches of Django models into the DB using the Postgres COPY command.
 alternative to [bulk_create](https://docs.djangoproject.com/en/3.2/ref/models/querysets/#bulk-create) and 
 [bulk_update](https://docs.djangoproject.com/en/3.2/ref/models/querysets/#bulk-update) in Django.
 
-Note: Currently, this library only supports Postgres. Other databases may be added in the future
+Note: Currently, this library only supports Postgres. Other databases may be added in the future.
 
 ## Install
 ```shell

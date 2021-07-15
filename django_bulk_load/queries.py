@@ -91,7 +91,15 @@ def generate_insert_query(
     loading_table_name: str,
     ignore_conflicts: bool,
     insert_fields: Sequence[models.Field],
-):
+) -> Composable:
+    """
+    Generate a query for INSERTing records from one table to another
+    :param table_name: Name of the table to insert to
+    :param loading_table_name: Name of the table to load from
+    :param ignore_conflicts: Ignore records that cannot be inserted because of unique constraint
+    :param insert_fields: Fields to insert on the table
+    :return:
+    """
     query = SQL(
         "INSERT INTO {table_name} ({insert_column_list}) "
         "SELECT {select_column_list} FROM {loading_table_name}"
