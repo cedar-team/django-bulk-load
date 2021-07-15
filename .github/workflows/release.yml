@@ -18,5 +18,5 @@ jobs:
     - name: Python Semantic Release
       uses: cedar-team/python-semantic-release@debugging
       with:
-        github_token: ${{ secrets.GITHUB_TOKEN }}
+        github_token: ${{ secrets.GH_TOKEN }}
         pypi_token: ${{ secrets.PYPI_TOKEN }}
