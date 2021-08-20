@@ -182,3 +182,13 @@ bulk_select_model_dicts(
 ## Contributing
 We are not accepting pull requests from anyone outside Cedar employees at this time. 
 All pull requests will be closed.
+
+### Commit Syntax
+All PRs must be a single commit and follow the following syntax 
+https://github.com/angular/angular/blob/master/CONTRIBUTING.md#-commit-message-format
+
+### Testing
+You will need Docker installed and run the following command
+```
+./test.sh
+```
