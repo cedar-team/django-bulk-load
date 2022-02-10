@@ -14,7 +14,7 @@ setuptools.setup(
     description="Bulk load Django models",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/cedar/django-bulk-load",
+    url="https://github.com/cedar-team/django-bulk-load",
     project_urls={},
     classifiers=[
         "Programming Language :: Python :: 3",
