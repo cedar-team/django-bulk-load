@@ -2,6 +2,10 @@
 
 <!--next-version-placeholder-->
 
+## v1.2.1 (2022-02-10)
+### Fix
+* **setup.py:** Update repo url ([`5fd77ed`](https://github.com/cedar-team/django-bulk-load/commit/5fd77ed5ed0f01b615d1a4ae0a8ebc965c3530fb))
+
 ## v1.2.0 (2022-02-10)
 ### Feature
 * Update dependency from psycopg2-binary to psycopg ([`9adfb78`](https://github.com/cedar-team/django-bulk-load/commit/9adfb788028c1cab1530ec2f412258f90e11c712))
