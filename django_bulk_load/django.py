@@ -53,7 +53,7 @@ def records_to_models(
 
 
 def _default_model_to_value(model, field, connection):
-    field_val = field.pre_save(model, add=model.pk is None)
+    field_val = field.pre_save(model, add=model._state.adding)
     return field.get_db_prep_save(field_val, connection=connection)
 
 

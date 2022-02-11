@@ -5,6 +5,7 @@ from django_bulk_load import bulk_upsert_models
 from .test_project.models import (
     TestComplexModel,
     TestForeignKeyModel,
+    TestUUIDModel
 )
 
 
@@ -227,6 +228,25 @@ class E2ETestBulkUpsertModels(TestCase):
         self.assertIsNotNone(post_model_2.id)
         self.assertEqual(saved_model_1.id, post_model_1.id)
         self.assertEqual(saved_model_3.id, post_model_3.id)
+
+    def test_upsert_and_return_models_uuid(self):
+        unsaved_model = TestUUIDModel()
+        saved_model = TestUUIDModel()
+        saved_model.save()
+        old_modified_on = saved_model.modified_on
+
+        pre_models = [unsaved_model, saved_model]
+        post_models = bulk_upsert_models(pre_models, return_models=True)
+
+        post_unsaved_model = [model for model in post_models if model.id == unsaved_model.id][0]
+        post_saved_model = [model for model in post_models if model.id == saved_model.id][0]
+
+        self.assertIsNotNone(post_unsaved_model.modified_on)
+        self.assertIsNotNone(post_unsaved_model.created_on)
+        self.assertIsNotNone(post_saved_model.created_on)
+        self.assertLess(old_modified_on, post_saved_model.modified_on)
+
+
 
     def test_upsert_insert_only_fields(self):
         saved_model_1 = TestComplexModel(integer_field=1, string_field="a")
