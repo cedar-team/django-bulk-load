@@ -2,6 +2,10 @@
 
 <!--next-version-placeholder-->
 
+## v1.2.2 (2022-02-11)
+### Fix
+* **django:** Fix issue with uuid pk and auto_now_add ([`777c787`](https://github.com/cedar-team/django-bulk-load/commit/777c787e501ff6528b921c3f97bc9b1fb990f35e))
+
 ## v1.2.1 (2022-02-10)
 ### Fix
 * **setup.py:** Update repo url ([`5fd77ed`](https://github.com/cedar-team/django-bulk-load/commit/5fd77ed5ed0f01b615d1a4ae0a8ebc965c3530fb))
