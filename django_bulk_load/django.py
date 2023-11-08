@@ -1,4 +1,6 @@
+import base64
 import csv
+import os
 from io import StringIO
 from typing import Any, Iterable, List, NamedTuple, Optional, Tuple, Type
 
@@ -69,7 +71,11 @@ def models_to_tsv_buffer(
         row = []
         for include_field in include_fields:
             field_val = django_field_to_value(obj, include_field, connection)
-            if field_val is None:
+            if isinstance(field_val, connection.Database.Binary):
+                # We can migrate to psychopg 3 which has more advanced copy commands for binary once we upgrade
+                # Django to 4.1+
+                raise ValueError("Binary data is not supported in bulk operations")
+            elif field_val is None:
                 row.append(NULL_CHARACTER)
             elif isinstance(field_val, Json):
                 row.append(field_val.dumps(field_val.adapted))
