@@ -168,3 +168,17 @@ class E2ETestBulkInsertModelsTest(TestCase):
                 unsaved_model_with_pk,
                 unsaved_model_without_pk
             ])
+
+    def test_errors_when_uploading_binary(self):
+        unsaved_model1 = TestComplexModel(
+            binary_field=b"hello2",
+        )
+        unsaved_model2 = TestComplexModel(
+            binary_field=b"hello2",
+        )
+
+        with self.assertRaises(ValueError):
+            bulk_insert_models([
+                unsaved_model1,
+                unsaved_model2
+            ])

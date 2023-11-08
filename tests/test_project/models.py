@@ -14,6 +14,7 @@ class TestComplexModel(models.Model):
     test_foreign = models.ForeignKey(
         TestForeignKeyModel, on_delete=models.PROTECT, null=True
     )
+    binary_field = models.BinaryField(null=True)
 
 
 
