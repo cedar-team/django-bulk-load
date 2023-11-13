@@ -492,6 +492,7 @@ def bulk_select_model_dicts(
     select_field_names: Iterable[str],
     filter_data: Iterable[Sequence],
     skip_filter_transform=False,
+    select_for_update=False
 ) -> List[Dict]:
     """
     Select/Get model dictionaries by filter_field_names. It returns dictionaries, not Django
@@ -508,6 +509,7 @@ def bulk_select_model_dicts(
     for datetimes or other complex values that have different representation in the DB. The downside is the transform
     can be slow. If you know your data is simple values (strings, integers, etc.) and don't need
     transformation, you can pass True.
+    :param select_for_update: Use `FOR UPDATE` clause in select query. This will lock the rows.
 
     :return: List of dictionaries that match the model_data. Returns dictionaries for performance reasons
     """
@@ -546,6 +548,7 @@ def bulk_select_model_dicts(
             table_name=table_name,
             select_fields=select_fields,
             filter_fields=filter_fields,
+            select_for_update=select_for_update
         )
         sql_string = sql.as_string(cursor.connection)
 

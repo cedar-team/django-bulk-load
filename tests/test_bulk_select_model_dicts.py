@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from django.db import transaction, connection, connections
 from django.test import TestCase
 from django_bulk_load import bulk_select_model_dicts
 from .test_project.models import (
@@ -8,7 +9,7 @@ from .test_project.models import (
 )
 
 
-class E2ETestBulkInsertChangedModels(TestCase):
+class E2ETestBulkSelectModelDicts(TestCase):
     def test_empty_get(self):
         self.assertEqual(
             bulk_select_model_dicts(
@@ -144,3 +145,4 @@ class E2ETestBulkInsertChangedModels(TestCase):
         for attr in ["integer_field", "string_field", "json_field"]:
             self.assertEqual(getattr(saved_model1, attr), result_dicts[0][attr])
             self.assertEqual(getattr(saved_model2, attr), result_dicts[1][attr])
+
