@@ -124,6 +124,7 @@ bulk_upsert_models(
     insert_only_field_names: Sequence[str] = None,
     model_changed_field_names: Sequence[str] = None,
     update_if_null_field_names: Sequence[str] = None,
+    update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
 )
 ```
@@ -141,6 +142,7 @@ bulk_update_models(
     pk_field_names: Sequence[str] = None,
     model_changed_field_names: Sequence[str] = None,
     update_if_null_field_names: Sequence[str] = None,
+    update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
 )
 ```
@@ -175,6 +177,7 @@ bulk_select_model_dicts(
     filter_field_names: Iterable[str],
     select_field_names: Iterable[str],
     filter_data: Iterable[Sequence],
+    select_for_update=False,
     skip_filter_transform=False,
 )
 ```

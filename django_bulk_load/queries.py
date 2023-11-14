@@ -1,4 +1,4 @@
-from typing import Sequence
+from typing import Sequence, Callable
 
 from django.db import models
 from psycopg2.sql import SQL, Composable, Composed, Identifier
@@ -55,7 +55,6 @@ def generate_distinct_condition(
     conditions = []
     for field in compare_fields:
         conditions.append(
-            # wrap column names in double quotes to handle columns starting with a number
             SQL(
                 "{source_table_name}.{column} IS DISTINCT FROM {destination_table_name}.{column}"
             ).format(
@@ -65,6 +64,20 @@ def generate_distinct_condition(
             )
         )
     return SQL(" OR ").join(conditions)
+
+
+def generate_greater_than_condition(
+    source_table_name: str,
+    destination_table_name: str,
+    field: models.Field,
+) -> Composable:
+    return SQL(
+        "{source_table_name}.{column} > {destination_table_name}.{column}"
+    ).format(
+        source_table_name=Identifier(source_table_name),
+        column=Identifier(field.column),
+        destination_table_name=Identifier(destination_table_name),
+    )
 
 
 def generate_distinct_null_condition(
@@ -218,6 +231,7 @@ def generate_update_query(
     pk_fields: Sequence[models.Field],
     update_fields: Sequence[models.Field],
     compare_fields: Sequence[models.Field],
+    update_where: Callable[[Sequence[models.Field], str, str], Composable] = None,
     update_if_null_fields: Sequence[models.Field] = None,
 ) -> Composable:
     update_if_null_fields = update_if_null_fields or []
@@ -253,24 +267,28 @@ def generate_update_query(
         destination_table_name=table_name,
         fields=pk_fields,
     )
-    distinct_from_clause = generate_distinct_condition(
-        source_table_name=loading_table_name,
-        destination_table_name=table_name,
-        compare_fields=compare_fields,
-    )
 
-    if update_if_null_fields:
-        distinct_null_clause = generate_distinct_null_condition(
+    if update_where:
+        where_clause = update_where(update_fields, loading_table_name, table_name)
+    else:
+        where_clause = generate_distinct_condition(
             source_table_name=loading_table_name,
             destination_table_name=table_name,
-            compare_fields=update_if_null_fields,
+            compare_fields=compare_fields,
         )
-        if compare_fields:
-            distinct_from_clause = SQL(" OR ").join(
-                [distinct_from_clause, distinct_null_clause]
+
+        if update_if_null_fields:
+            distinct_null_clause = generate_distinct_null_condition(
+                source_table_name=loading_table_name,
+                destination_table_name=table_name,
+                compare_fields=update_if_null_fields,
             )
-        else:
-            distinct_from_clause = distinct_null_clause
+            if compare_fields:
+                where_clause = SQL(" OR ").join(
+                    [where_clause, distinct_null_clause]
+                )
+            else:
+                where_clause = distinct_null_clause
 
     return SQL(
         "UPDATE {table_name} SET {update_clause} FROM {loading_table_name} WHERE {where_clause}"
@@ -278,9 +296,9 @@ def generate_update_query(
         table_name=Identifier(table_name),
         update_clause=update_clause,
         loading_table_name=Identifier(loading_table_name),
-        where_clause=SQL("({distinct_from_clause}) AND ({join_clause})").format(
-            distinct_from_clause=distinct_from_clause, join_clause=join_clause
-        ),
+        where_clause=SQL("({where_clause}) AND ({join_clause})").format(
+            where_clause=where_clause, join_clause=join_clause
+        ) if where_clause else join_clause
     )
 
 

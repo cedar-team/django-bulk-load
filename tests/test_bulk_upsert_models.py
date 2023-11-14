@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from django.test import TestCase
-from django_bulk_load import bulk_upsert_models
+from django_bulk_load import bulk_upsert_models, generate_greater_than_condition
 from .test_project.models import (
     TestComplexModel,
     TestForeignKeyModel,
@@ -551,3 +551,46 @@ class E2ETestBulkUpsertModels(TestCase):
 
         self.assertEqual(saved_model3.string_field, "d")
         self.assertIsNone(saved_model3.datetime_field)
+
+    def test_custom_update_where(self):
+        # Should only update integer_field and datetime_field
+        model1 = TestComplexModel(
+            integer_field=1,
+            string_field="a",
+        )
+        model1.save()
+        model1.integer_field = 5
+        model1.string_field = "b"
+
+        model2 = TestComplexModel(
+            integer_field=3, string_field="c"
+        )
+        model2.save()
+        model2.integer_field = 2
+        model2.string_field = "c"
+
+
+        def update_where(fields, source_table_name, destination_table_name):
+            """
+            Custom where clause where the new value must be greater than the old value
+            """
+
+            # This should only update if the new value is greater than previous value
+            return generate_greater_than_condition(
+                source_table_name=source_table_name,
+                destination_table_name=destination_table_name,
+                field=TestComplexModel._meta.get_field("integer_field"),
+            )
+
+        bulk_upsert_models(
+            [model1, model2],
+            update_where=update_where
+        )
+
+        # First model should be updated because 5 > 1
+        saved_model1 = TestComplexModel.objects.get(integer_field=5)
+        self.assertEqual(saved_model1.string_field, "b")
+
+        # Second model should not be updated because 2 < 3
+        saved_model2 = TestComplexModel.objects.get(integer_field=3)
+        self.assertEqual(saved_model2.string_field, "c")

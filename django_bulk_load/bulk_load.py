@@ -1,13 +1,13 @@
 import logging
 from time import monotonic
-from typing import Dict, Iterable, List, Optional, Sequence, Type
+from typing import Dict, Iterable, List, Optional, Sequence, Type, Callable
 
 from django.db import connections, router, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.backends.utils import CursorWrapper
-from django.db.models import AutoField, Model
+from django.db.models import AutoField, Model, Field
 from psycopg2.extras import execute_values
-from psycopg2.sql import Composable
+from psycopg2.sql import Composable, SQL
 
 from .django import (
     django_field_to_query_value,
@@ -207,6 +207,7 @@ def bulk_update_models(
     pk_field_names: Sequence[str] = None,
     model_changed_field_names: Sequence[str] = None,
     update_if_null_field_names: Sequence[str] = None,
+    update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
 ):
     """
@@ -219,6 +220,8 @@ def bulk_update_models(
     list is changed) (i.e. update_on/last_modified)
     :param update_if_null_field_names: Fields that only get updated if the new value is NULL or existing
     value in the DB is NULL.
+    :param update_where: Function that returns a Composable that is used to filter the update query. Should not be used
+    with model_changed_field_names or update_if_null_field_names (can lead to unexpected behavior)
     :param return_models: Query and return the models in the DB, whether updated or not.
     Defaults to False, since this can significantly degrade performance
     :return: None or List[Model] depending upon returns_models param. Returns all models passed in,
@@ -284,6 +287,7 @@ def bulk_update_models(
             update_if_null_field_names, model_meta
         ),
         pk_fields=pk_fields,
+        update_where=update_where,
         loading_table_name=loading_table_name,
     )
 
@@ -312,6 +316,7 @@ def bulk_upsert_models(
     insert_only_field_names: Sequence[str] = None,
     model_changed_field_names: Sequence[str] = None,
     update_if_null_field_names: Sequence[str] = None,
+    update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
 ):
     """
@@ -326,6 +331,8 @@ def bulk_upsert_models(
     list is changed) (i.e. update_on/last_modified)
     :param update_if_null_field_names: Fields that only get updated if the new value is NULL or existing
     value in the DB is NULL.
+    :param update_where: Function that returns a Composable that is used to filter the update query. Cannot be used
+    with model_changed_field_names or update_if_null_field_names
     :param return_models: Query and return the models in the DB, whether updated or not.
     Defaults to False, since this can significantly degrade performance
     :return: None or List[Model] depending upon returns_models param. Returns all models passed in,
@@ -368,6 +375,7 @@ def bulk_upsert_models(
                 compare_fields=compare_fields,
                 update_fields=update_fields,
                 pk_fields=pk_fields,
+                update_where=update_where,
                 update_if_null_fields=get_fields_from_names(
                     update_if_null_field_names, model_meta
                 ),
