@@ -2,6 +2,13 @@
 
 
 
+## v1.4.0 (2023-11-15)
+
+### Feature
+
+* feat: add ability to specify custom where clause in bulk_update_models and bulk_upsert_models ([`0dc7a65`](https://github.com/cedar-team/django-bulk-load/commit/0dc7a65348f750792cf58da1bc996b569d45d650))
+
+
 ## v1.3.0 (2023-11-13)
 
 ### Feature
