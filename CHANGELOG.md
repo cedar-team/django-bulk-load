@@ -2,6 +2,13 @@
 
 
 
+## v1.4.3 (2023-11-17)
+
+### Fix
+
+* fix(release): fix version variables ([`148bb07`](https://github.com/cedar-team/django-bulk-load/commit/148bb07fc1d4865ffd5aa0ee3e3a33ee97146305))
+
+
 ## v1.4.2 (2023-11-17)
 
 ### Fix
