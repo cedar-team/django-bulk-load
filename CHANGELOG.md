@@ -2,6 +2,13 @@
 
 
 
+## v1.4.2 (2023-11-17)
+
+### Fix
+
+* fix(release): update workflow.yml permissions ([`f1172c8`](https://github.com/cedar-team/django-bulk-load/commit/f1172c8f6fcb860d07e6921c488052bba1e15b04))
+
+
 ## v1.4.1 (2023-11-17)
 
 ### Fix
