@@ -2,6 +2,13 @@
 
 
 
+## v1.4.1 (2023-11-17)
+
+### Fix
+
+* fix(build): update release.yml ([`37be1f3`](https://github.com/cedar-team/django-bulk-load/commit/37be1f3e54a4d72d3cafbe31a2248b17ef1559bf))
+
+
 ## v1.4.0 (2023-11-15)
 
 ### Feature
