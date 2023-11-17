@@ -17,7 +17,15 @@ jobs:
         token: ${{ secrets.GH_TOKEN }}
 
     - name: Python Semantic Release
+      id: semantic_release
       uses: cedar-team/python-semantic-release@master
       with:
         github_token: ${{ secrets.GH_TOKEN }}
-        pypi_token: ${{ secrets.PYPI_TOKEN }}
+    - name: Deps
+      run: python -m pip install -U build
+    - name: Build
+      run: python -m build
+    - name: Publish to PyPi
+      uses: cedar-team/gh-action-pypi-publish@release/v1
+      if: steps.semantic_release.outputs.released == 'true'
+   
