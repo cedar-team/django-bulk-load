@@ -6,8 +6,6 @@ from django.db import connections, router, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.backends.utils import CursorWrapper
 from django.db.models import AutoField, Model, Field
-from psycopg2.extras import execute_values
-from psycopg2.sql import Composable
 
 from .django import (
     django_field_to_query_value,
@@ -18,6 +16,7 @@ from .django import (
     models_to_tsv_buffer,
     records_to_models,
 )
+from .database import execute_values, Composable
 from .queries import (
     add_returning,
     create_temp_table,

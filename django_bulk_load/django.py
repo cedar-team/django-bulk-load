@@ -5,8 +5,8 @@ from typing import Any, Iterable, List, NamedTuple, Optional, Tuple, Type
 from django.db import models
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.models.options import Options
-from psycopg2.extras import Json
 
+from .database import Json
 from .utils import NULL_CHARACTER
 
 
