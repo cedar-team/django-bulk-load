@@ -513,10 +513,7 @@ def bulk_select_model_dicts(
     the filter_field_names keys in addition to any fields in select_field_names
     :param filter_data: Values (normally tuples) of the filter_field_names. For instance if filter_field_names=["field1", "field2"],
     filter_data may be [(12, "hello"), (23, "world"), (35, "fun"), ...]
-    :param skip_filter_transform: Normally the function converts the filter_data into DB specific values. This is useful
-    for datetimes or other complex values that have different representation in the DB. The downside is the transform
-    can be slow. If you know your data is simple values (strings, integers, etc.) and don't need
-    transformation, you can pass True.
+    :param skip_filter_transform: DEPRECATED.
     :param select_for_update: Use `FOR UPDATE` clause in select query. This will lock the rows.
 
     :return: List of dictionaries that match the model_data. Returns dictionaries for performance reasons
@@ -539,32 +536,13 @@ def bulk_select_model_dicts(
     connection = connections[db_name]
 
     with connection.cursor() as cursor:
-        # Grab all the filter data, so we can know the length
-        filter_data = list(filter_data)
-        if not skip_filter_transform:
-            filter_data_transformed = []
-            for filter_vals in filter_data:
-                filter_data_transformed.append(
-                    [
-                        django_field_to_query_value(filter_fields[i], value)
-                        for i, value in enumerate(filter_vals)
-                    ]
-                )
-            filter_data = filter_data_transformed
-
-        sql = generate_values_select_query(
-            table_name=table_name,
-            select_fields=select_fields,
-            filter_fields=filter_fields,
-            select_for_update=select_for_update
-        )
-        sql_string = sql.as_string(cursor.connection)
+        models = [model_class(**dict(zip(filter_field_names, x))) for x in filter_data]
+        cursor.execute(generate_select_query(table_name, create_temp_table_and_load(models, connection, cursor, filter_field_names), filter_fields, select_fields, for_update=select_for_update))
 
         logger.info(
             "Starting selecting models",
             extra=dict(query_dict_count=len(filter_data), table_name=table_name),
         )
-        execute_values(cursor, sql_string, filter_data, page_size=len(filter_data))
         columns = [col[0] for col in cursor.description]
 
         # Map columns to fields so we can later correctly interpret column values
@@ -590,5 +568,4 @@ def bulk_select_model_dicts(
                 duration=monotonic() - start_time,
             ),
         )
-
         return results

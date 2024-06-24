@@ -307,6 +307,7 @@ def generate_select_query(
     loading_table_name: str,
     join_fields: Sequence[models.Field],
     select_fields: Sequence[models.Field] = None,
+    for_update=False
 ) -> Composable:
     join_clause = generate_join_condition(
         source_table_name=loading_table_name,
@@ -326,14 +327,24 @@ def generate_select_query(
     else:
         fields = SQL("{table_name}.*").format(table_name=Identifier(table_name))
 
-    return SQL(
-        "SELECT {fields} FROM {table_name} INNER JOIN {loading_table_name} ON {join_clause}"
-    ).format(
-        loading_table_name=Identifier(loading_table_name),
-        join_clause=join_clause,
-        fields=fields,
-        table_name=Identifier(table_name),
-    )
+    if for_update:
+        return SQL(
+            "SELECT {fields} FROM {table_name} INNER JOIN {loading_table_name} ON {join_clause} FOR UPDATE"
+        ).format(
+            loading_table_name=Identifier(loading_table_name),
+            join_clause=join_clause,
+            fields=fields,
+            table_name=Identifier(table_name),
+        )
+    else:
+        return SQL(
+            "SELECT {fields} FROM {table_name} INNER JOIN {loading_table_name} ON {join_clause}"
+        ).format(
+            loading_table_name=Identifier(loading_table_name),
+            join_clause=join_clause,
+            fields=fields,
+            table_name=Identifier(table_name),
+        )
 
 
 def generate_values_select_query(
