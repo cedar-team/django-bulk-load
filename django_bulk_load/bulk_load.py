@@ -537,7 +537,15 @@ def bulk_select_model_dicts(
 
     with connection.cursor() as cursor:
         models = [model_class(**dict(zip(filter_field_names, x))) for x in filter_data]
-        cursor.execute(generate_select_query(table_name, create_temp_table_and_load(models, connection, cursor, filter_field_names), filter_fields, select_fields, for_update=select_for_update))
+        cursor.execute(
+                generate_select_query(
+                    table_name,
+                    create_temp_table_and_load(models, connection, cursor, filter_field_names),
+                    filter_fields,
+                    select_fields,
+                    for_update=select_for_update
+                    )
+                )
 
         logger.info(
             "Starting selecting models",
