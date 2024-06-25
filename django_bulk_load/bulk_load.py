@@ -537,7 +537,7 @@ def bulk_select_model_dicts(
     db_name = router.db_for_read(model_class)
     connection = connections[db_name]
 
-    with connection.cursor() as cursor:
+    with connection.cursor() as cursor, transaction.atomic(using=db_name):
         models = [model_class(**dict(zip(filter_field_names, x))) for x in filter_data]
         cursor.execute(
                 generate_distinct_select_query(
