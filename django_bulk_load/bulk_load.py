@@ -26,6 +26,7 @@ from .queries import (
     generate_insert_for_update_query,
     generate_select_latest,
     generate_select_query,
+    generate_distinct_select_query,
     generate_update_query,
     generate_values_select_query,
     copy_query
@@ -96,6 +97,10 @@ def bulk_load_models_with_queries(
     field_names: Sequence[str] = None,
     return_models: bool = False,
 ):
+    """"
+    This could be called, "bulk-load-models-into-temp-table AND THEN execute queries"
+    Or, perhaps "execute_queries_with_temp_table_as_helper".
+    """
     start_time = monotonic()
     model = models[0]
     db_name = router.db_for_write(model.__class__)
@@ -538,7 +543,7 @@ def bulk_select_model_dicts(
     with connection.cursor() as cursor:
         models = [model_class(**dict(zip(filter_field_names, x))) for x in filter_data]
         cursor.execute(
-                generate_select_query(
+                generate_distinct_select_query(
                     table_name,
                     create_temp_table_and_load(models, connection, cursor, filter_field_names),
                     filter_fields,

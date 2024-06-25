@@ -21,6 +21,41 @@ class E2ETestBulkSelectModelDicts(TestCase):
             [],
         )
 
+    def test_ignores_duplicates_in_input(self):
+        saved_model = TestComplexModel(
+            integer_field=123,
+            string_field="hello",
+        )
+        saved_model.save()
+        result_dicts = bulk_select_model_dicts(
+            model_class=TestComplexModel,
+            filter_field_names=["integer_field"],
+            filter_data=[(123,), (123,)],
+            select_field_names=["string_field", "integer_field"],
+        )
+
+        self.assertEqual(len(result_dicts), 1)
+
+    def test_finds_duplicates_when_they_exist(self):
+        TestComplexModel(
+            integer_field=123,
+            string_field="hello",
+        ).save()
+        secod_saved_model = TestComplexModel(
+            integer_field=123,
+            string_field="hello",
+        ).save()
+        result_dicts = bulk_select_model_dicts(
+            model_class=TestComplexModel,
+            filter_field_names=["integer_field"],
+            filter_data=[(123,), (123,)],
+            select_field_names=["string_field", "integer_field"],
+        )
+
+        self.assertEqual(len(result_dicts), 2)
+
+
+
     def test_single_select(self):
         foreign = TestForeignKeyModel()
         foreign.save()

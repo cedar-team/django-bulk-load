@@ -302,7 +302,7 @@ def generate_update_query(
     )
 
 
-def generate_select_query(
+def generate_distinct_select_query(
     table_name: str,
     loading_table_name: str,
     join_fields: Sequence[models.Field],
@@ -329,7 +329,7 @@ def generate_select_query(
 
     if for_update:
         return SQL(
-            "SELECT {fields} FROM {table_name} INNER JOIN {loading_table_name} ON {join_clause} FOR UPDATE"
+            "SELECT {fields} FROM {table_name} where exists (select 1 from {loading_table_name} where {join_clause}) FOR UPDATE"
         ).format(
             loading_table_name=Identifier(loading_table_name),
             join_clause=join_clause,
@@ -338,13 +338,49 @@ def generate_select_query(
         )
     else:
         return SQL(
-            "SELECT {fields} FROM {table_name} INNER JOIN {loading_table_name} ON {join_clause}"
+            "SELECT {fields} FROM {table_name} where exists (select 1 from {loading_table_name} where {join_clause})"
         ).format(
             loading_table_name=Identifier(loading_table_name),
             join_clause=join_clause,
             fields=fields,
             table_name=Identifier(table_name),
         )
+
+
+
+
+def generate_select_query(
+    table_name: str,
+    loading_table_name: str,
+    join_fields: Sequence[models.Field],
+    select_fields: Sequence[models.Field] = None
+) -> Composable:
+    join_clause = generate_join_condition(
+        source_table_name=loading_table_name,
+        destination_table_name=table_name,
+        fields=join_fields,
+    )
+    if select_fields:
+        fields = SQL(", ").join(
+            [
+                SQL("{table_name}.{column_name}").format(
+                    table_name=Identifier(table_name),
+                    column_name=Identifier(field.column),
+                )
+                for field in select_fields
+            ]
+        )
+    else:
+        fields = SQL("{table_name}.*").format(table_name=Identifier(table_name))
+
+    return SQL(
+        "SELECT {fields} FROM {table_name} INNER JOIN {loading_table_name} ON {join_clause}"
+    ).format(
+        loading_table_name=Identifier(loading_table_name),
+        join_clause=join_clause,
+        fields=fields,
+        table_name=Identifier(table_name),
+    )
 
 
 def generate_values_select_query(
