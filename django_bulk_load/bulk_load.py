@@ -9,7 +9,6 @@ from django.db.models import AutoField, Model, Field
 from psycopg2.sql import Composable, SQL
 
 from .django import (
-    django_field_to_query_value,
     get_fields_and_names,
     get_fields_from_names,
     get_model_fields,
