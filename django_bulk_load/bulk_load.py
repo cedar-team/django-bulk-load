@@ -28,7 +28,6 @@ from .queries import (
     generate_select_query,
     generate_distinct_select_query,
     generate_update_query,
-    generate_values_select_query,
     copy_query
 )
 from .utils import generate_table_name

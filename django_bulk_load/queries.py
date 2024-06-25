@@ -382,30 +382,3 @@ def generate_select_query(
         table_name=Identifier(table_name),
     )
 
-
-def generate_values_select_query(
-    table_name: str,
-    filter_fields: Sequence[models.Field],
-    select_fields: Sequence[models.Field],
-    select_for_update: bool
-):
-    select_fields_sql = SQL(", ").join(
-        [Identifier(field.column) for field in select_fields]
-    )
-
-    filter_fields_sql = SQL(", ").join(
-        [Identifier(field.column) for field in filter_fields]
-    )
-
-    for_update = SQL("")
-    if select_for_update:
-        for_update = SQL(" FOR UPDATE")
-
-    return SQL(
-        "SELECT {select_fields_sql} from {table_name} where ({filter_fields_sql}) IN (VALUES %s){for_update}"
-    ).format(
-        table_name=Identifier(table_name),
-        select_fields_sql=select_fields_sql,
-        filter_fields_sql=filter_fields_sql,
-        for_update=for_update,
-    )
