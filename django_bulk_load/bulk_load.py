@@ -6,7 +6,6 @@ from django.db import connections, router, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
 from django.db.backends.utils import CursorWrapper
 from django.db.models import AutoField, Model, Field
-from psycopg2.extras import execute_values
 from psycopg2.sql import Composable, SQL
 
 from .django import (
