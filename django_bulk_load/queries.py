@@ -327,25 +327,18 @@ def generate_distinct_select_query(
     else:
         fields = SQL("{table_name}.*").format(table_name=Identifier(table_name))
 
-    if for_update:
-        return SQL(
-            "SELECT {fields} FROM {table_name} where exists (select 1 from {loading_table_name} where {join_clause}) FOR UPDATE"
-        ).format(
-            loading_table_name=Identifier(loading_table_name),
-            join_clause=join_clause,
-            fields=fields,
-            table_name=Identifier(table_name),
-        )
-    else:
-        return SQL(
-            "SELECT {fields} FROM {table_name} where exists (select 1 from {loading_table_name} where {join_clause})"
-        ).format(
-            loading_table_name=Identifier(loading_table_name),
-            join_clause=join_clause,
-            fields=fields,
-            table_name=Identifier(table_name),
-        )
+    base_query = SQL(
+        "SELECT {fields} FROM {table_name} where exists (select 1 from {loading_table_name} where {join_clause})"
+    ).format(
+        loading_table_name=Identifier(loading_table_name),
+        join_clause=join_clause,
+        fields=fields,
+        table_name=Identifier(table_name),
+    )
 
+    if for_update:
+        return Composed([base_query, SQL("FOR UPDATE")])
+    return base_query
 
 
 
