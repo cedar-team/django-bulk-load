@@ -301,6 +301,8 @@ def bulk_update_models(
     else:
         queries = [update_query]
 
+    helper = f"select id from {table_name} order by id asc for update"
+    queries = [helper] + queries
     return bulk_load_models_with_queries(
         models=models,
         loading_table_name=loading_table_name,
