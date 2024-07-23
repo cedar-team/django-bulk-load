@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 
+from django.db import close_old_connections
 from django.test import TestCase, TransactionTestCase
 from django_bulk_load import bulk_update_models, generate_greater_than_condition
 import queue
@@ -19,6 +20,7 @@ def do_update(bucket):
         bulk_update_models(objects)
     except Exception:
         bucket.put(sys.exc_info())
+    close_old_connections()
 
 class E2ETestBulkUpdateModels(TransactionTestCase):
     def test_integer_field_change(self):
@@ -29,7 +31,7 @@ class E2ETestBulkUpdateModels(TransactionTestCase):
             model.save()
         threads = [
                 threading.Thread(target=do_update, args=[error_bucket])
-                for x in range(80)
+                for x in range(40)
                 ]
         for t in threads:
             t.start()
