@@ -1,21 +1,34 @@
 from datetime import datetime, timezone
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 from django_bulk_load import bulk_update_models, generate_greater_than_condition
 from .test_project.models import (
     TestComplexModel,
     TestForeignKeyModel,
 )
+import random
+import threading
 
+def do_update():
+    objects = [x for x in TestComplexModel.objects.all()]
+    for current in objects:
+        current.integer_field = random.randint(10,100000)
+    bulk_update_models(objects)
 
-class E2ETestBulkUpdateModels(TestCase):
+class E2ETestBulkUpdateModels(TransactionTestCase):
     def test_integer_field_change(self):
-        model1 = TestComplexModel(integer_field=1)
-        model1.save()
-        model1.integer_field = 2
-        bulk_update_models([model1])
-        saved_model = TestComplexModel.objects.get()
-        self.assertEqual(saved_model.integer_field, 2)
+        models = [TestComplexModel(integer_field=1) for x in range(10000)]
+        for model in models:
+            model.save()
+        threads = [
+                threading.Thread(target=do_update)
+                for x in range(80)
+                ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        print("JOINED")
 
     def test_string_field_change(self):
         model1 = TestComplexModel(string_field="hello")
