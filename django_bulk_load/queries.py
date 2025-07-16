@@ -362,3 +362,287 @@ def generate_values_select_query(
         filter_fields_sql=filter_fields_sql,
         for_update=for_update,
     )
+
+
+def add_merge_returning(query: Composable, table_name: str, action: bool = True) -> Composable:
+    """
+    Add RETURNING clause to MERGE query with optional merge_action() support.
+    
+    :param query: The MERGE query to add RETURNING to
+    :param table_name: Name of the target table
+    :param action: Whether to include merge_action() in the return
+    :return: MERGE query with RETURNING clause
+    """
+    if action:
+        return Composed(
+            [
+                query,
+                SQL(" RETURNING merge_action(), {table_name}.*").format(table_name=Identifier(table_name)),
+            ]
+        )
+    else:
+        return Composed(
+            [
+                query,
+                SQL(" RETURNING {table_name}.*").format(table_name=Identifier(table_name)),
+            ]
+        )
+
+
+def generate_merge_upsert_with_returning(
+    table_name: str,
+    loading_table_name: str,
+    pk_fields: Sequence[models.Field],
+    update_fields: Sequence[models.Field],
+    insert_fields: Sequence[models.Field],
+    compare_fields: Sequence[models.Field] = None,
+    update_where: Callable[[Sequence[models.Field], str, str], Composable] = None,
+    update_if_null_fields: Sequence[models.Field] = None,
+    include_action: bool = True,
+) -> Composable:
+    """
+    Generate a MERGE query with RETURNING clause for efficient upsert operations.
+    
+    :param table_name: Name of the target table
+    :param loading_table_name: Name of the source/loading table
+    :param pk_fields: Primary key fields for matching
+    :param update_fields: Fields to update when matched
+    :param insert_fields: Fields to insert when not matched
+    :param compare_fields: Fields to compare for determining if update is needed
+    :param update_where: Custom WHERE condition function for updates
+    :param update_if_null_fields: Fields that only get updated if NULL
+    :param include_action: Whether to include merge_action() in RETURNING clause
+    :return: MERGE query with RETURNING as Composable
+    """
+    merge_query = generate_merge_upsert_query(
+        table_name=table_name,
+        loading_table_name=loading_table_name,
+        pk_fields=pk_fields,
+        update_fields=update_fields,
+        insert_fields=insert_fields,
+        compare_fields=compare_fields,
+        update_where=update_where,
+        update_if_null_fields=update_if_null_fields,
+    )
+    
+    return add_merge_returning(merge_query, table_name, action=include_action)
+
+
+def generate_merge_upsert_query(
+    table_name: str,
+    loading_table_name: str,
+    pk_fields: Sequence[models.Field],
+    update_fields: Sequence[models.Field],
+    insert_fields: Sequence[models.Field],
+    compare_fields: Sequence[models.Field] = None,
+    update_where: Callable[[Sequence[models.Field], str, str], Composable] = None,
+    update_if_null_fields: Sequence[models.Field] = None,
+) -> Composable:
+    """
+    Generate a MERGE query for efficient upsert operations using PostgreSQL 15+ MERGE statement.
+    This replaces the traditional two-step UPDATE + INSERT approach with a single atomic operation.
+    
+    :param table_name: Name of the target table
+    :param loading_table_name: Name of the source/loading table
+    :param pk_fields: Primary key fields for matching
+    :param update_fields: Fields to update when matched
+    :param insert_fields: Fields to insert when not matched
+    :param compare_fields: Fields to compare for determining if update is needed
+    :param update_where: Custom WHERE condition function for updates
+    :param update_if_null_fields: Fields that only get updated if NULL
+    :return: MERGE query as Composable
+    """
+    update_if_null_fields = update_if_null_fields or []
+    compare_fields = compare_fields or []
+    
+    # Generate JOIN condition for matching rows
+    join_clause = generate_join_condition(
+        source_table_name=loading_table_name,
+        destination_table_name=table_name,
+        fields=pk_fields,
+    )
+    
+    # Build UPDATE SET clause
+    update_conditions = []
+    for field in update_fields:
+        if not getattr(field, "auto_now_add", False) and not isinstance(field, models.AutoField):
+            update_conditions.append(
+                SQL("{column} = {loading_table_name}.{column}").format(
+                    column=Identifier(field.column),
+                    loading_table_name=Identifier(loading_table_name),
+                )
+            )
+    
+    # Handle update_if_null_fields
+    for field in update_if_null_fields:
+        update_conditions.append(
+            SQL(
+                "{column} = CASE "
+                "WHEN {loading_table_name}.{column} IS NULL OR "
+                "{table_name}.{column} IS NULL THEN {loading_table_name}.{column} "
+                "ELSE {table_name}.{column} END"
+            ).format(
+                column=Identifier(field.column),
+                table_name=Identifier(table_name),
+                loading_table_name=Identifier(loading_table_name),
+            )
+        )
+    
+    # Build INSERT clause
+    insert_columns = SQL(", ").join(Identifier(field.column) for field in insert_fields)
+    insert_values = SQL(", ").join(
+        SQL("{loading_table_name}.{column}").format(
+            loading_table_name=Identifier(loading_table_name),
+            column=Identifier(field.column)
+        ) for field in insert_fields
+    )
+    
+    # Determine WHEN MATCHED condition
+    when_matched_condition = SQL("")
+    if update_where:
+        when_matched_condition = SQL(" AND ({condition})").format(
+            condition=update_where(update_fields, loading_table_name, table_name)
+        )
+    elif compare_fields:
+        distinct_condition = generate_distinct_condition(
+            source_table_name=loading_table_name,
+            destination_table_name=table_name,
+            compare_fields=compare_fields,
+        )
+        when_matched_condition = SQL(" AND ({condition})").format(
+            condition=distinct_condition
+        )
+        
+        if update_if_null_fields:
+            distinct_null_condition = generate_distinct_null_condition(
+                source_table_name=loading_table_name,
+                destination_table_name=table_name,
+                compare_fields=update_if_null_fields,
+            )
+            when_matched_condition = SQL(" AND (({distinct_condition}) OR ({null_condition}))").format(
+                distinct_condition=distinct_condition,
+                null_condition=distinct_null_condition
+            )
+    elif update_if_null_fields:
+        distinct_null_condition = generate_distinct_null_condition(
+            source_table_name=loading_table_name,
+            destination_table_name=table_name,
+            compare_fields=update_if_null_fields,
+        )
+        when_matched_condition = SQL(" AND ({condition})").format(
+            condition=distinct_null_condition
+        )
+    
+    # Build the complete MERGE statement
+    merge_query = SQL(
+        "MERGE INTO {table_name} "
+        "USING {loading_table_name} "
+        "ON {join_clause} "
+        "WHEN MATCHED{when_matched_condition} THEN "
+        "UPDATE SET {update_clause} "
+        "WHEN NOT MATCHED THEN "
+        "INSERT ({insert_columns}) VALUES ({insert_values})"
+    ).format(
+        table_name=Identifier(table_name),
+        loading_table_name=Identifier(loading_table_name),
+        join_clause=join_clause,
+        when_matched_condition=when_matched_condition,
+        update_clause=SQL(", ").join(update_conditions) if update_conditions else SQL(""),
+        insert_columns=insert_columns,
+        insert_values=insert_values,
+    )
+    
+    return merge_query
+
+
+def generate_merge_conditional_query(
+    table_name: str,
+    loading_table_name: str,
+    pk_fields: Sequence[models.Field],
+    insert_fields: Sequence[models.Field],
+    conditions: list,
+) -> Composable:
+    """
+    Generate a MERGE query with multiple conditional WHEN clauses.
+    This supports complex logic like conditional updates, deletes, and inserts.
+    
+    :param table_name: Name of the target table
+    :param loading_table_name: Name of the source/loading table  
+    :param pk_fields: Primary key fields for matching
+    :param insert_fields: Fields to insert when not matched
+    :param conditions: List of dictionaries defining WHEN conditions
+                      Format: [{"type": "matched|not_matched", "condition": SQL, "action": "update|delete|insert", "fields": {...}}]
+    :return: MERGE query as Composable
+    """
+    # Generate JOIN condition
+    join_clause = generate_join_condition(
+        source_table_name=loading_table_name,
+        destination_table_name=table_name,
+        fields=pk_fields,
+    )
+    
+    # Build WHEN clauses
+    when_clauses = []
+    
+    for condition in conditions:
+        if condition["type"] == "matched":
+            if condition["action"] == "update":
+                update_conditions = []
+                for field_name, value_expr in condition["fields"].items():
+                    update_conditions.append(
+                        SQL("{column} = {value}").format(
+                            column=Identifier(field_name),
+                            value=value_expr
+                        )
+                    )
+                
+                when_clause = SQL(
+                    "WHEN MATCHED AND {condition} THEN UPDATE SET {update_clause}"
+                ).format(
+                    condition=condition["condition"],
+                    update_clause=SQL(", ").join(update_conditions)
+                )
+                
+            elif condition["action"] == "delete":
+                when_clause = SQL(
+                    "WHEN MATCHED AND {condition} THEN DELETE"
+                ).format(condition=condition["condition"])
+                
+        elif condition["type"] == "not_matched":
+            if condition["action"] == "insert":
+                insert_columns = SQL(", ").join(Identifier(field.column) for field in insert_fields)
+                insert_values = SQL(", ").join(
+                    SQL("{loading_table_name}.{column}").format(
+                        loading_table_name=Identifier(loading_table_name),
+                        column=Identifier(field.column)
+                    ) for field in insert_fields
+                )
+                
+                when_clause = SQL(
+                    "WHEN NOT MATCHED AND {condition} THEN INSERT ({insert_columns}) VALUES ({insert_values})"
+                ).format(
+                    condition=condition["condition"],
+                    insert_columns=insert_columns,
+                    insert_values=insert_values
+                )
+            elif condition["action"] == "nothing":
+                when_clause = SQL(
+                    "WHEN NOT MATCHED AND {condition} THEN DO NOTHING"
+                ).format(condition=condition["condition"])
+        
+        when_clauses.append(when_clause)
+    
+    # Build the complete MERGE statement
+    merge_query = SQL(
+        "MERGE INTO {table_name} "
+        "USING {loading_table_name} "
+        "ON {join_clause} "
+        "{when_clauses}"
+    ).format(
+        table_name=Identifier(table_name),
+        loading_table_name=Identifier(loading_table_name),
+        join_clause=join_clause,
+        when_clauses=SQL(" ").join(when_clauses),
+    )
+    
+    return merge_query

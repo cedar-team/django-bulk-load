@@ -9,6 +9,8 @@ from django.db.models import AutoField, Model, Field
 from psycopg2.extras import execute_values
 from psycopg2.sql import Composable, SQL
 
+from . import config
+
 from .django import (
     django_field_to_query_value,
     get_fields_and_names,
@@ -28,7 +30,11 @@ from .queries import (
     generate_select_query,
     generate_update_query,
     generate_values_select_query,
-    copy_query
+    copy_query,
+    generate_merge_upsert_query,
+    generate_merge_upsert_with_returning,
+    generate_merge_conditional_query,
+    add_merge_returning
 )
 from .utils import generate_table_name
 
@@ -318,6 +324,7 @@ def bulk_upsert_models(
     update_if_null_field_names: Sequence[str] = None,
     update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
+    use_merge: bool = None,
 ):
     """
     UPSERT a batch of models. Replicates [UPSERTing](https://wiki.postgresql.org/wiki/UPSERT) for a large set of models.
@@ -335,12 +342,19 @@ def bulk_upsert_models(
     with model_changed_field_names or update_if_null_field_names
     :param return_models: Query and return the models in the DB, whether updated or not.
     Defaults to False, since this can significantly degrade performance
+    :param use_merge: Whether to use PostgreSQL 15+ MERGE statement for improved performance.
+    If None, uses the global configuration (config.use_merge_by_default). 
+    Automatically falls back to legacy approach for older PostgreSQL versions.
     :return: None or List[Model] depending upon returns_models param. Returns all models passed in,
     not just ones updated or inserted. Models will not be in the same order they were passed in
     """
     if not models:
         logger.warning("No models passed to bulk_upsert_models")
         return [] if return_models else None
+
+    # Use global configuration if not explicitly specified
+    if use_merge is None:
+        use_merge = config.use_merge_by_default
 
     insert_only_field_names = insert_only_field_names or []
     model_changed_field_names = model_changed_field_names or []
@@ -366,6 +380,127 @@ def bulk_upsert_models(
     insert_fields = [field for field in fields if not isinstance(field, AutoField)]
     loading_table_name = generate_table_name(table_name)
 
+    # Use MERGE for PostgreSQL 15+ when enabled
+    if use_merge:
+        try:
+            return _bulk_upsert_models_with_merge(
+                models=models,
+                table_name=table_name,
+                loading_table_name=loading_table_name,
+                pk_fields=pk_fields,
+                update_fields=update_fields,
+                insert_fields=insert_fields,
+                compare_fields=compare_fields,
+                update_where=update_where,
+                update_if_null_field_names=update_if_null_field_names,
+                model_meta=model_meta,
+                return_models=return_models,
+            )
+        except Exception as e:
+            # Fall back to legacy approach if MERGE fails and fallback is enabled
+            if config.merge_fallback_enabled:
+                logger.warning(f"MERGE operation failed, falling back to legacy approach: {e}")
+                use_merge = False
+            else:
+                # Re-raise the exception if fallback is disabled
+                raise
+
+    # Legacy two-step approach for older PostgreSQL versions or when MERGE fails
+    return _bulk_upsert_models_legacy(
+        models=models,
+        table_name=table_name,
+        loading_table_name=loading_table_name,
+        pk_fields=pk_fields,
+        update_fields=update_fields,
+        insert_fields=insert_fields,
+        compare_fields=compare_fields,
+        update_where=update_where,
+        update_if_null_field_names=update_if_null_field_names,
+        model_meta=model_meta,
+        return_models=return_models,
+    )
+
+
+def _bulk_upsert_models_with_merge(
+    models: Sequence[Model],
+    table_name: str,
+    loading_table_name: str,
+    pk_fields: Sequence[Field],
+    update_fields: Sequence[Field],
+    insert_fields: Sequence[Field],
+    compare_fields: Sequence[Field],
+    update_where: Callable[[Sequence[Field], str, str], Composable] = None,
+    update_if_null_field_names: Sequence[str] = None,
+    model_meta = None,
+    return_models: bool = False,
+):
+    """
+    UPSERT implementation using PostgreSQL 15+ MERGE statement for improved performance.
+    """
+    update_if_null_fields = get_fields_from_names(update_if_null_field_names or [], model_meta)
+    
+    if return_models:
+        # Use MERGE with RETURNING for returning models
+        merge_query = generate_merge_upsert_with_returning(
+            table_name=table_name,
+            loading_table_name=loading_table_name,
+            pk_fields=pk_fields,
+            update_fields=update_fields,
+            insert_fields=insert_fields,
+            compare_fields=compare_fields,
+            update_where=update_where,
+            update_if_null_fields=update_if_null_fields,
+            include_action=True,  # Include merge_action() for debugging
+        )
+        
+        # Additional SELECT to ensure we return ALL models, not just modified ones
+        select_query = generate_select_query(
+            table_name=table_name,
+            loading_table_name=loading_table_name,
+            join_fields=pk_fields,
+        )
+        
+        queries = [merge_query, select_query]
+    else:
+        # Simple MERGE without RETURNING
+        merge_query = generate_merge_upsert_query(
+            table_name=table_name,
+            loading_table_name=loading_table_name,
+            pk_fields=pk_fields,
+            update_fields=update_fields,
+            insert_fields=insert_fields,
+            compare_fields=compare_fields,
+            update_where=update_where,
+            update_if_null_fields=update_if_null_fields,
+        )
+        
+        queries = [merge_query]
+
+    return bulk_load_models_with_queries(
+        models=models,
+        loading_table_name=loading_table_name,
+        load_queries=queries,
+        return_models=return_models,
+    )
+
+
+def _bulk_upsert_models_legacy(
+    models: Sequence[Model],
+    table_name: str,
+    loading_table_name: str,
+    pk_fields: Sequence[Field],
+    update_fields: Sequence[Field],
+    insert_fields: Sequence[Field],
+    compare_fields: Sequence[Field],
+    update_where: Callable[[Sequence[Field], str, str], Composable] = None,
+    update_if_null_field_names: Sequence[str] = None,
+    model_meta = None,
+    return_models: bool = False,
+):
+    """
+    Legacy UPSERT implementation using two-step UPDATE + INSERT approach.
+    Used for PostgreSQL versions < 15 or as fallback when MERGE fails.
+    """
     queries = []
 
     if update_fields:
@@ -377,7 +512,7 @@ def bulk_upsert_models(
                 pk_fields=pk_fields,
                 update_where=update_where,
                 update_if_null_fields=get_fields_from_names(
-                    update_if_null_field_names, model_meta
+                    update_if_null_field_names or [], model_meta
                 ),
                 loading_table_name=loading_table_name,
             )
