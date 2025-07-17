@@ -5,6 +5,8 @@ from .bulk_load import (
     bulk_insert_models,
     bulk_update_models,
     bulk_upsert_models,
+    _bulk_upsert_models_with_copy,
+    _bulk_update_models_with_copy,
 )
 
 from .queries import (
@@ -13,6 +15,7 @@ from .queries import (
     generate_merge_upsert_query,
     generate_merge_upsert_with_returning,
     generate_merge_conditional_query,
+    generate_merge_update_query,
     add_merge_returning
 )
 
@@ -67,6 +70,7 @@ __all__ = [
     "generate_merge_upsert_query",
     "generate_merge_upsert_with_returning", 
     "generate_merge_conditional_query",
+    "generate_merge_update_query",
     "add_merge_returning",
     "configure",
     "config"

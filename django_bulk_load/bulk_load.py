@@ -9,8 +9,6 @@ from django.db.models import AutoField, Model, Field
 from psycopg2.extras import execute_values
 from psycopg2.sql import Composable, SQL
 
-from . import config
-
 from .django import (
     django_field_to_query_value,
     get_fields_and_names,
@@ -34,6 +32,7 @@ from .queries import (
     generate_merge_upsert_query,
     generate_merge_upsert_with_returning,
     generate_merge_conditional_query,
+    generate_merge_update_query,
     add_merge_returning
 )
 from .utils import generate_table_name
@@ -215,6 +214,8 @@ def bulk_update_models(
     update_if_null_field_names: Sequence[str] = None,
     update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
+    use_merge: bool = True,
+    use_copy: bool = False,
 ):
     """
     UPDATE a batch of models. If the model is not found in the database, it is ignored.
@@ -230,6 +231,11 @@ def bulk_update_models(
     with model_changed_field_names or update_if_null_field_names (can lead to unexpected behavior)
     :param return_models: Query and return the models in the DB, whether updated or not.
     Defaults to False, since this can significantly degrade performance
+    :param use_merge: Whether to use PostgreSQL 15+ MERGE statement for improved performance.
+    Automatically falls back to legacy UPDATE ... FROM approach for older PostgreSQL versions.
+    :param use_copy: Whether to use PostgreSQL COPY command for fastest possible performance.
+    This approach loads data into a temp table using COPY, then uses UPDATE ... FROM.
+    Overrides use_merge when True.
     :return: None or List[Model] depending upon returns_models param. Returns all models passed in,
     not just ones updated or inserted. Models will not be in the same order they were passed in
     """
@@ -237,65 +243,71 @@ def bulk_update_models(
         logger.warning("No models passed to bulk_update_models")
         return [] if return_models else None
 
+    # Use COPY-based approach if requested (fastest method)
+    if use_copy:
+        return _bulk_update_models_with_copy(
+            models=models,
+            update_field_names=update_field_names,
+            pk_field_names=pk_field_names,
+            model_changed_field_names=model_changed_field_names,
+            update_if_null_field_names=update_if_null_field_names,
+            update_where=update_where,
+            return_models=return_models,
+        )
+
     model_changed_field_names = model_changed_field_names or []
     update_if_null_field_names = update_if_null_field_names or []
     model_meta = models[0]._meta
     table_name = model_meta.db_table
+    fields, field_names = get_fields_and_names(update_field_names, model_meta, include_auto_fields=True)
 
     pk_fields = get_pk_fields(pk_field_names, model_meta)
     pk_field_names = [field.name for field in pk_fields]
-
-    if update_field_names is None:
-        # Get all the model fields, since none were passed in
-        update_fields = get_model_fields(model_meta, include_auto_fields=True)
-        update_field_names = [field.name for field in update_fields]
-    else:
-        update_fields = get_fields_from_names(update_field_names, model_meta)
-
-    # Remove the update_if_null_field_names and pk_field_names fields. They shouldn't be updated by this operation
-    update_fields = [
-        field
-        for field in update_fields
-        if (
-            field.name not in pk_field_names
-            and field.name not in update_if_null_field_names
-        )
-    ]
-
-    fields_names_to_operate_on = list(
-        {
-            *update_field_names,
-            *model_changed_field_names,
-            *pk_field_names,
-            *update_if_null_field_names,
-        }
-    )
-    fields_to_operate_on = get_fields_from_names(fields_names_to_operate_on, model_meta)
-
-    # Remove pk_names, AutoFields, model_changed_field_names and update_if_null_field_names
     ignore_on_compare = {
         *model_changed_field_names,
         *pk_field_names,
+    }
+    compare_fields = [field for field in fields if field.name not in ignore_on_compare]
+    ignore_on_update = {
+        *pk_field_names,
         *update_if_null_field_names,
     }
-    compare_fields = [
-        field
-        for field in fields_to_operate_on
-        if field.name not in ignore_on_compare and not isinstance(field, AutoField)
-    ]
-
+    update_fields = [field for field in fields if field.name not in ignore_on_update]
+    fields_names_to_operate_on = [field.name for field in fields]
     loading_table_name = generate_table_name(table_name)
-    update_query = generate_update_query(
-        table_name=table_name,
-        compare_fields=compare_fields,
-        update_fields=update_fields,
-        update_if_null_fields=get_fields_from_names(
-            update_if_null_field_names, model_meta
-        ),
-        pk_fields=pk_fields,
-        update_where=update_where,
-        loading_table_name=loading_table_name,
-    )
+    
+    # Use MERGE for PostgreSQL 15+ when enabled
+    if use_merge:
+        try:
+            update_query = generate_merge_update_query(
+                table_name=table_name,
+                loading_table_name=loading_table_name,
+                pk_fields=pk_fields,
+                update_fields=update_fields,
+                compare_fields=compare_fields,
+                update_where=update_where,
+                update_if_null_fields=get_fields_from_names(
+                    update_if_null_field_names, model_meta
+                ),
+            )
+        except Exception as e:
+            # Fall back to legacy approach if MERGE fails
+            logger.warning(f"MERGE update failed, falling back to legacy approach: {e}")
+            use_merge = False
+    
+    # Legacy UPDATE ... FROM approach for older PostgreSQL versions or when MERGE fails
+    if not use_merge:
+        update_query = generate_update_query(
+            table_name=table_name,
+            compare_fields=compare_fields,
+            update_fields=update_fields,
+            update_if_null_fields=get_fields_from_names(
+                update_if_null_field_names, model_meta
+            ),
+            pk_fields=pk_fields,
+            update_where=update_where,
+            loading_table_name=loading_table_name,
+        )
 
     if return_models:
         select_query = generate_select_query(
@@ -316,6 +328,128 @@ def bulk_update_models(
     )
 
 
+def _bulk_update_models_with_copy(
+    models: Sequence[Model],
+    update_field_names: Sequence[str] = None,
+    pk_field_names: Sequence[str] = None,
+    model_changed_field_names: Sequence[str] = None,
+    update_if_null_field_names: Sequence[str] = None,
+    update_where: Callable[[Sequence[Field], str, str], Composable] = None,
+    return_models: bool = False,
+):
+    """
+    Fastest UPDATE implementation using PostgreSQL COPY command.
+    Loads data into a temp table using COPY, then uses UPDATE ... FROM.
+    """
+    if not models:
+        return [] if return_models else None
+
+    model_changed_field_names = model_changed_field_names or []
+    update_if_null_field_names = update_if_null_field_names or []
+    model_meta = models[0]._meta
+    table_name = model_meta.db_table
+    fields, field_names = get_fields_and_names(update_field_names, model_meta, include_auto_fields=True)
+
+    pk_fields = get_pk_fields(pk_field_names, model_meta)
+    pk_field_names = [field.name for field in pk_fields]
+    ignore_on_compare = {
+        *model_changed_field_names,
+        *pk_field_names,
+    }
+    compare_fields = [field for field in fields if field.name not in ignore_on_compare]
+    ignore_on_update = {
+        *pk_field_names,
+        *update_if_null_field_names,
+    }
+    update_fields = [field for field in fields if field.name not in ignore_on_update]
+    
+    # Get field names for the operation
+    update_field_names = [field.name for field in update_fields]
+    all_field_names = [field.name for field in fields]
+    
+    # Prepare data rows for COPY (include all fields including PK for matching)
+    rows = []
+    for model in models:
+        row = []
+        for field_name in all_field_names:
+            value = getattr(model, field_name)
+            row.append(value)
+        rows.append(row)
+    
+    # Execute the COPY-based update
+    db_name = router.db_for_write(models[0].__class__)
+    connection = connections[db_name]
+    
+    with connection.cursor() as cursor, transaction.atomic(using=db_name):
+        # Create temp table
+        temp_table_name = f"temp_update_{table_name.replace('.', '_')}"
+        temp_table_sql = f"""
+            CREATE TEMP TABLE {temp_table_name} (
+                {', '.join(f'{field.column} {_get_postgres_type(field)}' for field in fields)}
+            ) ON COMMIT DROP;
+        """
+        cursor.execute(temp_table_sql)
+        
+        # COPY data into temp table
+        import io
+        import json
+        buf = io.StringIO()
+        for row in rows:
+            formatted_row = []
+            for i, v in enumerate(row):
+                if v is None:
+                    formatted_row.append('\\N')  # PostgreSQL NULL representation
+                elif all_field_names[i] in ['json_field'] and hasattr(models[0], 'json_field'):
+                    formatted_row.append(json.dumps(v) if v else 'null')
+                else:
+                    formatted_row.append(str(v))
+            buf.write('\t'.join(formatted_row) + '\n')
+        buf.seek(0)
+        cursor.copy_expert(
+            f"COPY {temp_table_name} ({', '.join(field.column for field in fields)}) FROM STDIN WITH (FORMAT text, NULL '\\N')", 
+            buf
+        )
+        
+        # Execute UPDATE ... FROM
+        update_set_clauses = []
+        for field in update_fields:
+            update_set_clauses.append(f"{field.column} = temp.{field.column}")
+        update_set_clause = ", ".join(update_set_clauses)
+        
+        join_conditions = " AND ".join(f"t.{pk_field.column} = temp.{pk_field.column}" for pk_field in pk_fields)
+        
+        update_sql = f"""
+            UPDATE {table_name} AS t
+            SET {update_set_clause}
+            FROM {temp_table_name} AS temp
+            WHERE {join_conditions};
+        """
+        cursor.execute(update_sql)
+        
+        # Return models if requested
+        if return_models:
+            # Query all models that were in the temp table
+            select_sql = f"""
+                SELECT {', '.join(f't.{field.column}' for field in fields)}
+                FROM {table_name} t
+                INNER JOIN {temp_table_name} temp ON {join_conditions}
+            """
+            cursor.execute(select_sql)
+            rows = cursor.fetchall()
+            
+            # Convert rows back to model instances
+            result_models = []
+            for row in rows:
+                model = models[0].__class__()
+                for i, field in enumerate(fields):
+                    setattr(model, field.name, row[i])
+                result_models.append(model)
+            
+            return result_models
+    
+    return None
+
+
 def bulk_upsert_models(
     models: Sequence[Model],
     pk_field_names: Sequence[str] = None,
@@ -324,7 +458,8 @@ def bulk_upsert_models(
     update_if_null_field_names: Sequence[str] = None,
     update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
-    use_merge: bool = None,
+    use_merge: bool = True,
+    use_copy: bool = False,
 ):
     """
     UPSERT a batch of models. Replicates [UPSERTing](https://wiki.postgresql.org/wiki/UPSERT) for a large set of models.
@@ -345,6 +480,9 @@ def bulk_upsert_models(
     :param use_merge: Whether to use PostgreSQL 15+ MERGE statement for improved performance.
     If None, uses the global configuration (config.use_merge_by_default). 
     Automatically falls back to legacy approach for older PostgreSQL versions.
+    :param use_copy: Whether to use PostgreSQL COPY command for fastest possible performance.
+    This approach loads data into a temp table using COPY, then uses INSERT ... ON CONFLICT.
+    Overrides use_merge when True.
     :return: None or List[Model] depending upon returns_models param. Returns all models passed in,
     not just ones updated or inserted. Models will not be in the same order they were passed in
     """
@@ -352,9 +490,17 @@ def bulk_upsert_models(
         logger.warning("No models passed to bulk_upsert_models")
         return [] if return_models else None
 
-    # Use global configuration if not explicitly specified
-    if use_merge is None:
-        use_merge = config.use_merge_by_default
+    # Use COPY-based approach if requested (fastest method)
+    if use_copy:
+        return _bulk_upsert_models_with_copy(
+            models=models,
+            pk_field_names=pk_field_names,
+            insert_only_field_names=insert_only_field_names,
+            model_changed_field_names=model_changed_field_names,
+            update_if_null_field_names=update_if_null_field_names,
+            update_where=update_where,
+            return_models=return_models,
+        )
 
     insert_only_field_names = insert_only_field_names or []
     model_changed_field_names = model_changed_field_names or []
@@ -398,12 +544,8 @@ def bulk_upsert_models(
             )
         except Exception as e:
             # Fall back to legacy approach if MERGE fails and fallback is enabled
-            if config.merge_fallback_enabled:
-                logger.warning(f"MERGE operation failed, falling back to legacy approach: {e}")
-                use_merge = False
-            else:
-                # Re-raise the exception if fallback is disabled
-                raise
+            logger.warning(f"MERGE operation failed, falling back to legacy approach: {e}")
+            use_merge = False
 
     # Legacy two-step approach for older PostgreSQL versions or when MERGE fails
     return _bulk_upsert_models_legacy(
@@ -544,6 +686,182 @@ def _bulk_upsert_models_legacy(
         load_queries=queries,
         return_models=return_models,
     )
+
+
+def _bulk_upsert_models_with_copy(
+    models: Sequence[Model],
+    pk_field_names: Sequence[str] = None,
+    insert_only_field_names: Sequence[str] = None,
+    model_changed_field_names: Sequence[str] = None,
+    update_if_null_field_names: Sequence[str] = None,
+    update_where: Callable[[Sequence[Field], str, str], Composable] = None,
+    return_models: bool = False,
+):
+    """
+    Fastest UPSERT implementation using PostgreSQL COPY command.
+    Loads data into a temp table using COPY, then uses INSERT ... ON CONFLICT.
+    """
+    if not models:
+        return [] if return_models else None
+
+    insert_only_field_names = insert_only_field_names or []
+    model_changed_field_names = model_changed_field_names or []
+    update_if_null_field_names = update_if_null_field_names or []
+    model_meta = models[0]._meta
+    table_name = model_meta.db_table
+    fields, field_names = get_fields_and_names(None, model_meta, include_auto_fields=True)
+
+    pk_fields = get_pk_fields(pk_field_names, model_meta)
+    pk_field_names = [field.name for field in pk_fields]
+    
+    # Determine which fields to include in the operation
+    ignore_on_compare = {
+        *insert_only_field_names,
+        *model_changed_field_names,
+        *pk_field_names,
+    }
+    compare_fields = [field for field in fields if field.name not in ignore_on_compare]
+    ignore_on_update = {
+        *insert_only_field_names,
+        *pk_field_names,
+        *update_if_null_field_names,
+    }
+    update_fields = [field for field in fields if field.name not in ignore_on_update]
+    insert_fields = [field for field in fields if not isinstance(field, AutoField)]
+    
+    # Get field names for the operation
+    insert_field_names = [field.name for field in insert_fields]
+    update_field_names = [field.name for field in update_fields]
+    
+    # Build the conflict target (ON CONFLICT clause)
+    conflict_target = ", ".join(pk_field_names)
+    
+    # Build the UPDATE SET clause
+    update_set_clauses = []
+    for field_name in update_field_names:
+        update_set_clauses.append(f"{field_name}=EXCLUDED.{field_name}")
+    update_set_clause = ", ".join(update_set_clauses)
+    
+    # Prepare data rows for COPY
+    rows = []
+    for model in models:
+        row = []
+        for field_name in insert_field_names:
+            value = getattr(model, field_name)
+            row.append(value)
+        rows.append(row)
+    
+    # Execute the COPY-based upsert
+    db_name = router.db_for_write(models[0].__class__)
+    connection = connections[db_name]
+    
+    with connection.cursor() as cursor, transaction.atomic(using=db_name):
+        # Create temp table
+        temp_table_name = f"temp_upsert_{table_name.replace('.', '_')}"
+        temp_table_sql = f"""
+            CREATE TEMP TABLE {temp_table_name} (
+                {', '.join(f'{field.column} {_get_postgres_type(field)}' for field in insert_fields)}
+            ) ON COMMIT DROP;
+        """
+        cursor.execute(temp_table_sql)
+        
+        # COPY data into temp table
+        import io
+        import json
+        buf = io.StringIO()
+        for row in rows:
+            formatted_row = []
+            for i, v in enumerate(row):
+                if v is None:
+                    formatted_row.append('\\N')  # PostgreSQL NULL representation
+                elif insert_field_names[i] in ['json_field'] and hasattr(models[0], 'json_field'):
+                    formatted_row.append(json.dumps(v) if v else 'null')
+                else:
+                    formatted_row.append(str(v))
+            buf.write('\t'.join(formatted_row) + '\n')
+        buf.seek(0)
+        cursor.copy_expert(
+            f"COPY {temp_table_name} ({', '.join(field.column for field in insert_fields)}) FROM STDIN WITH (FORMAT text, NULL '\\N')", 
+            buf
+        )
+        
+        # Execute INSERT ... ON CONFLICT
+        conflict_target = ", ".join(pk_field.column for pk_field in pk_fields)
+        update_set_clauses = []
+        for field in update_fields:
+            update_set_clauses.append(f"{field.column}=EXCLUDED.{field.column}")
+        update_set_clause = ", ".join(update_set_clauses)
+        
+        upsert_sql = f"""
+            INSERT INTO {table_name} ({', '.join(field.column for field in insert_fields)})
+            SELECT {', '.join(field.column for field in insert_fields)} FROM {temp_table_name}
+            ON CONFLICT ({conflict_target})
+            DO UPDATE SET {update_set_clause};
+        """
+        cursor.execute(upsert_sql)
+        
+        # Return models if requested
+        if return_models:
+            # Query all models that were in the temp table
+            join_conditions = " AND ".join(f"t.{pk_field.column} = temp.{pk_field.column}" for pk_field in pk_fields)
+            select_sql = f"""
+                SELECT {', '.join(f't.{field.column}' for field in insert_fields)}
+                FROM {table_name} t
+                INNER JOIN {temp_table_name} temp ON {join_conditions}
+            """
+            cursor.execute(select_sql)
+            rows = cursor.fetchall()
+            
+            # Convert rows back to model instances
+            result_models = []
+            for row in rows:
+                model = models[0].__class__()
+                for i, field in enumerate(insert_fields):
+                    setattr(model, field.name, row[i])
+                result_models.append(model)
+            
+            return result_models
+    
+    return None
+
+
+def _get_postgres_type(field):
+    """Get PostgreSQL type for a Django field."""
+    # Try to get the database type from the field
+    try:
+        if hasattr(field, 'db_type'):
+            # Create a minimal connection context for db_type
+            from django.db import connection
+            db_type = field.db_type(connection)
+            if db_type:
+                return db_type
+    except Exception:
+        pass
+    
+    # Fallback type mapping
+    type_mapping = {
+        'AutoField': 'bigint',
+        'BigAutoField': 'bigint',
+        'IntegerField': 'integer',
+        'BigIntegerField': 'bigint',
+        'SmallIntegerField': 'smallint',
+        'PositiveIntegerField': 'integer',
+        'PositiveSmallIntegerField': 'smallint',
+        'TextField': 'text',
+        'CharField': f'varchar({field.max_length})',
+        'DateTimeField': 'timestamptz',
+        'DateField': 'date',
+        'TimeField': 'time',
+        'BooleanField': 'boolean',
+        'FloatField': 'double precision',
+        'DecimalField': 'numeric',
+        'JSONField': 'jsonb',
+        'BinaryField': 'bytea',
+        'ForeignKey': 'bigint',
+    }
+    
+    field_type = field.__class__.__name__
+    return type_mapping.get(field_type, 'text')
 
 
 def bulk_insert_changed_models(

@@ -646,3 +646,116 @@ def generate_merge_conditional_query(
     )
     
     return merge_query
+
+
+def generate_merge_update_query(
+    table_name: str,
+    loading_table_name: str,
+    pk_fields: Sequence[models.Field],
+    update_fields: Sequence[models.Field],
+    compare_fields: Sequence[models.Field] = None,
+    update_where: Callable[[Sequence[models.Field], str, str], Composable] = None,
+    update_if_null_fields: Sequence[models.Field] = None,
+) -> Composable:
+    """
+    Generate a MERGE query for efficient update-only operations using PostgreSQL 15+ MERGE statement.
+    This is optimized for pure updates (no inserts) and can be faster than UPDATE ... FROM.
+    
+    :param table_name: Name of the target table
+    :param loading_table_name: Name of the source/loading table
+    :param pk_fields: Primary key fields for matching
+    :param update_fields: Fields to update when matched
+    :param compare_fields: Fields to compare for determining if update is needed
+    :param update_where: Custom WHERE condition function for updates
+    :param update_if_null_fields: Fields that only get updated if NULL
+    :return: MERGE query as Composable
+    """
+    update_if_null_fields = update_if_null_fields or []
+    compare_fields = compare_fields or []
+    
+    # Generate JOIN condition for matching rows
+    join_clause = generate_join_condition(
+        source_table_name=loading_table_name,
+        destination_table_name=table_name,
+        fields=pk_fields,
+    )
+    
+    # Build UPDATE SET clause
+    update_conditions = []
+    for field in update_fields:
+        if not getattr(field, "auto_now_add", False) and not isinstance(field, models.AutoField):
+            update_conditions.append(
+                SQL("{column} = {loading_table_name}.{column}").format(
+                    column=Identifier(field.column),
+                    loading_table_name=Identifier(loading_table_name),
+                )
+            )
+    
+    # Handle update_if_null_fields
+    for field in update_if_null_fields:
+        update_conditions.append(
+            SQL(
+                "{column} = CASE "
+                "WHEN {loading_table_name}.{column} IS NULL OR "
+                "{table_name}.{column} IS NULL THEN {loading_table_name}.{column} "
+                "ELSE {table_name}.{column} END"
+            ).format(
+                column=Identifier(field.column),
+                table_name=Identifier(table_name),
+                loading_table_name=Identifier(loading_table_name),
+            )
+        )
+    
+    # Determine WHEN MATCHED condition
+    when_matched_condition = SQL("")
+    if update_where:
+        when_matched_condition = SQL(" AND ({condition})").format(
+            condition=update_where(update_fields, loading_table_name, table_name)
+        )
+    elif compare_fields:
+        distinct_condition = generate_distinct_condition(
+            source_table_name=loading_table_name,
+            destination_table_name=table_name,
+            compare_fields=compare_fields,
+        )
+        when_matched_condition = SQL(" AND ({condition})").format(
+            condition=distinct_condition
+        )
+        
+        if update_if_null_fields:
+            distinct_null_condition = generate_distinct_null_condition(
+                source_table_name=loading_table_name,
+                destination_table_name=table_name,
+                compare_fields=update_if_null_fields,
+            )
+            when_matched_condition = SQL(" AND (({distinct_condition}) OR ({null_condition}))").format(
+                distinct_condition=distinct_condition,
+                null_condition=distinct_null_condition
+            )
+    elif update_if_null_fields:
+        distinct_null_condition = generate_distinct_null_condition(
+            source_table_name=loading_table_name,
+            destination_table_name=table_name,
+            compare_fields=update_if_null_fields,
+        )
+        when_matched_condition = SQL(" AND ({condition})").format(
+            condition=distinct_null_condition
+        )
+    
+    # Build the MERGE statement for update-only operations
+    merge_query = SQL(
+        "MERGE INTO {table_name} "
+        "USING {loading_table_name} "
+        "ON {join_clause} "
+        "WHEN MATCHED{when_matched_condition} THEN "
+        "UPDATE SET {update_clause} "
+        "WHEN NOT MATCHED THEN DO NOTHING"
+    ).format(
+        table_name=Identifier(table_name),
+        loading_table_name=Identifier(loading_table_name),
+        join_clause=join_clause,
+        when_matched_condition=when_matched_condition,
+        update_clause=SQL(", ").join(update_conditions) if update_conditions else SQL("id = id"),  # Dummy update if no conditions
+    )
+    
+    return merge_query
