@@ -22,6 +22,8 @@ This creates realistic conditions where bulk operations must maintain
 import os
 import sys
 import django
+from django.db import connections
+from django.core.management import execute_from_command_line
 from time import time
 from datetime import datetime, timezone
 from random import choice, randint, uniform
@@ -30,40 +32,30 @@ from random import choice, randint, uniform
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "tests.test_project.settings")
 django.setup()
 
-from django.db import transaction
-from django_bulk_load import bulk_update_models, bulk_insert_models, bulk_upsert_models
+from django_bulk_load import bulk_upsert_models
 from tests.test_project.models import TestComplexModel
-from django.db import connection
 
-# Data generation helpers for heavily indexed table
 STATUSES = ['active', 'inactive', 'pending', 'completed', 'cancelled']
 CATEGORIES = ['urgent', 'normal', 'low', 'critical', 'maintenance', 'feature', 'bugfix', 'enhancement']
 
-def generate_realistic_model(i, used_integers=None, used_strings=None):
-    """Generate a TestComplexModel with realistic data for all indexed fields"""
+
+def _generate_realistic_model(i, used_integers=None, used_strings=None):
     if used_integers is None:
         used_integers = set()
     if used_strings is None:
         used_strings = set()
-    
-    # Ensure unique integer_field for unique constraint (integer_field, category)
     integer_field = i
     category = choice(CATEGORIES)
     while (integer_field, category) in used_integers:
         integer_field += 1
     used_integers.add((integer_field, category))
-    
-    # Ensure unique string_field for unique constraint (string_field, status) when is_active=True
     string_field = f"record_{i}"
     status = choice(STATUSES)
     is_active = choice([True, False])
-    
-    # Only check uniqueness for active records
     if is_active:
         while (string_field, status) in used_strings:
             string_field = f"record_{i}_{randint(1000, 9999)}"
         used_strings.add((string_field, status))
-    
     return TestComplexModel(
         integer_field=integer_field,
         string_field=string_field,
@@ -75,354 +67,201 @@ def generate_realistic_model(i, used_integers=None, used_strings=None):
         is_active=is_active,
     )
 
-
-def clear_database():
-    """Clear all test models from the database"""
+def _clear_database():
     try:
         TestComplexModel.objects.all().delete()
     except Exception as e:
         print(f"Warning: Failed to clear database: {e}")
-        # Try to reconnect
-        from django.db import connections
         for conn in connections.all():
             conn.close()
 
-
-def safe_execute_with_retry(operation_func, operation_name, max_retries=2):
-    """Execute an operation with retry logic for database connection issues"""
-    for attempt in range(max_retries + 1):
+def _process_in_batches(operation_func, models, batch_size=10000, operation_name="batch operation"):
+    start = time()
+    total_batches = (len(models) + batch_size - 1) // batch_size
+    for i in range(0, len(models), batch_size):
+        batch = models[i:i + batch_size]
+        batch_num = (i // batch_size) + 1
         try:
-            start = time()
-            operation_func()
-            return time() - start
+            operation_func(batch)
         except Exception as e:
-            error_msg = str(e).lower()
-            if "server closed the connection" in error_msg or "connection" in error_msg:
-                print(f"{operation_name}: Connection lost (attempt {attempt + 1}/{max_retries + 1})")
-                if attempt < max_retries:
-                    print("Retrying after connection reset...")
-                    # Reset database connections
-                    from django.db import connections
-                    for conn in connections.all():
-                        conn.close()
-                    # Wait a moment before retry
-                    import time as time_sleep
-                    time_sleep.sleep(2)
-                    continue
-                else:
-                    print(f"{operation_name}: Failed after {max_retries + 1} attempts - {e}")
-                    return None
-            else:
-                print(f"{operation_name}: Failed - {e}")
-                return None
-    return None
+            print(f"  Batch {batch_num} failed: {e}")
+            raise e
+    return time() - start
 
-
-def run_bulk_update_benchmarks():
-    """Run benchmarks comparing bulk_update_models: legacy vs merge approaches"""
-    print("=" * 60)
-    print("BULK UPDATE BENCHMARKS (HEAVILY INDEXED TABLE)")
-    print("=" * 60)
-    print("bulk_update_models: Legacy vs MERGE approach")
-    print("Testing with 15+ indexes, composite indexes, partial indexes, and unique constraints")
-    print()
-    
-    counts = [1_000, 10_000, 100_000, 500_000]
-    
-    for count in counts:
-        print(f"count: {count:,}")
-        
-        # Create test models in database first
-        clear_database()
-        used_integers = set()
-        used_strings = set()
-        initial_models = [generate_realistic_model(i, used_integers, used_strings) for i in range(count)]
-        TestComplexModel.objects.bulk_create(initial_models)
-        
-        # Prepare models for update (need to fetch from DB to get IDs)
-        models = list(TestComplexModel.objects.all())
-        
-        # Get all existing (integer_field, category) pairs from the database
-        existing_pairs = set(TestComplexModel.objects.values_list('integer_field', 'category'))
-        used_integers = existing_pairs.copy()
-        used_strings = set()
-        
-        for i, model in enumerate(models):
-            # Ensure unique integer_field for unique constraint (integer_field, category)
-            integer_field = i + 1000
-            category = choice(CATEGORIES)
-            while (integer_field, category) in used_integers:
-                integer_field += 1
-            used_integers.add((integer_field, category))
-            
-            # Ensure unique string_field for unique constraint (string_field, status) when is_active=True
-            string_field = f"updated_{i}"
-            status = choice(STATUSES)
-            is_active = choice([True, False])
-            
-            # Only check uniqueness for active records
-            if is_active:
-                while (string_field, status) in used_strings:
-                    string_field = f"updated_{i}_{randint(1000, 9999)}"
-                used_strings.add((string_field, status))
-            
-            model.integer_field = integer_field
-            model.string_field = string_field
-            model.status = status
-            model.priority = randint(1, 10)
-            model.category = category
-            model.score = uniform(0.0, 100.0)
-            model.is_active = is_active
-        
-        # Test bulk_update_models with use_merge=False (legacy approach)
-        if count >= 100_000:
-            legacy_time = safe_execute_with_retry(
-                lambda: bulk_update_models(models, use_merge=False),
-                "bulk_update_models (legacy)"
-            )
-            if legacy_time:
-                print(f"bulk_update_models (legacy):      {legacy_time}")
-        else:
-            start = time()
-            try:
-                bulk_update_models(models, use_merge=False)
-                legacy_time = time() - start
-                print(f"bulk_update_models (legacy):      {legacy_time}")
-            except Exception as e:
-                print(f"bulk_update_models (legacy):      Failed - {e}")
-                legacy_time = None
-        
-        # Reset models for next test
-        # Get all existing (integer_field, category) pairs from the database
-        existing_pairs = set(TestComplexModel.objects.values_list('integer_field', 'category'))
-        used_integers = existing_pairs.copy()
-        used_strings = set()
-        
-        for i, model in enumerate(models):
-            # Ensure unique integer_field for unique constraint (integer_field, category)
-            integer_field = i + 2000
-            category = choice(CATEGORIES)
-            while (integer_field, category) in used_integers:
-                integer_field += 1
-            used_integers.add((integer_field, category))
-            
-            # Ensure unique string_field for unique constraint (string_field, status) when is_active=True
-            string_field = f"merge_test_{i}"
-            status = choice(STATUSES)
-            is_active = choice([True, False])
-            
-            # Only check uniqueness for active records
-            if is_active:
-                while (string_field, status) in used_strings:
-                    string_field = f"merge_test_{i}_{randint(1000, 9999)}"
-                used_strings.add((string_field, status))
-            
-            model.integer_field = integer_field
-            model.string_field = string_field
-            model.status = status
-            model.priority = randint(1, 10)
-            model.category = category
-            model.score = uniform(0.0, 100.0)
-            model.is_active = is_active
-        
-        # Test bulk_update_models with use_merge=True (MERGE approach)
-        if count >= 100_000:
-            merge_time = safe_execute_with_retry(
-                lambda: bulk_update_models(models, use_merge=True),
-                "bulk_update_models (merge)"
-            )
-            if merge_time:
-                print(f"bulk_update_models (merge):       {merge_time}")
-        else:
-            start = time()
-            try:
-                bulk_update_models(models, use_merge=True)
-                merge_time = time() - start
-                print(f"bulk_update_models (merge):       {merge_time}")
-            except Exception as e:
-                print(f"bulk_update_models (merge):       Failed - {e}")
-                merge_time = None
-        
-        # Test bulk_update_models with use_copy=True (fastest approach)
+def _time_operation(operation_func, operation_name, use_batching=False, models=None, batch_size=10000):
+    if use_batching:
         start = time()
         try:
-            bulk_update_models(models, use_copy=True)
-            copy_time = time() - start
-            print(f"bulk_update_models (COPY):         {copy_time}")
+            _process_in_batches(operation_func, models, batch_size, operation_name)
+            elapsed_time = time() - start
+            print(f"{operation_name}:      {elapsed_time}")
+            return elapsed_time
         except Exception as e:
-            print(f"bulk_update_models (COPY):         Failed - {e}")
-            copy_time = None
-        
-        # Show performance comparison
-        if legacy_time and merge_time:
-            if merge_time < legacy_time:
-                improvement = legacy_time / merge_time
-                print(f"MERGE vs Legacy:                  {improvement:.1f}x faster")
-            else:
-                improvement = merge_time / legacy_time
-                print(f"MERGE vs Legacy:                  {improvement:.1f}x slower")
-        if legacy_time and copy_time:
-            if copy_time < legacy_time:
-                improvement = legacy_time / copy_time
-                print(f"COPY vs Legacy:                   {improvement:.1f}x faster")
-            else:
-                improvement = copy_time / legacy_time
-                print(f"COPY vs Legacy:                   {improvement:.1f}x slower")
-        
-        print()
-        clear_database()
+            print(f"{operation_name}:      Failed - {e}")
+            return None
+    else:
+        start = time()
+        try:
+            operation_func()
+            elapsed_time = time() - start
+            print(f"{operation_name}:      {elapsed_time}")
+            return elapsed_time
+        except Exception as e:
+            print(f"{operation_name}:      Failed - {e}")
+            return None
 
+def _setup_upsert_test_data(count, prefix):
+    existing_models = _setup_test_database(count, pre_populate_ratio=0.5)
+    used_integers = set()
+    used_strings = set()
+    models = []
+    batch_size = 10000
+    created = 0
+    while created < count:
+        batch = min(batch_size, count - created)
+        models_batch = [_generate_realistic_model(i + created, used_integers, used_strings) for i in range(batch)]
+        models.extend(models_batch)
+        created += batch
+    return models
+
+def _setup_test_database(count, pre_populate_ratio=1.0, batch_size=10000):
+    _clear_database()
+    used_integers = set()
+    used_strings = set()
+    initial_count = int(count * pre_populate_ratio)
+    created = 0
+    while created < initial_count:
+        batch = min(batch_size, initial_count - created)
+        models_batch = [_generate_realistic_model(i + created, used_integers, used_strings) for i in range(batch)]
+        TestComplexModel.objects.bulk_create(models_batch)
+        created += batch
+    return list(TestComplexModel.objects.all())
 
 def run_bulk_upsert_benchmarks():
-    """Run benchmarks comparing bulk_upsert_models: legacy vs merge approaches"""
     print("=" * 60)
     print("BULK UPSERT BENCHMARKS (HEAVILY INDEXED TABLE)")
     print("=" * 60)
-    print("bulk_upsert_models: Legacy vs MERGE approach")
+    print("bulk_upsert_models: Legacy vs use_unlogged vs use_merge vs use_copy")
     print("Testing with 15+ indexes, composite indexes, partial indexes, and unique constraints")
     print()
-    
     counts = [1_000, 10_000, 100_000, 500_000]
-    
+    batch_size = 10000
     for count in counts:
         print(f"count: {count:,}")
         
-        # Pre-populate half the records in database
-        clear_database()
-        used_integers = set()
-        used_strings = set()
-        existing_models = [generate_realistic_model(i, used_integers, used_strings) for i in range(0, count // 2)]
-        TestComplexModel.objects.bulk_create(existing_models)
-        
-        # Prepare models for upsert (mix of new and existing)
-        used_integers = set()
-        used_strings = set()
-        models = [generate_realistic_model(i, used_integers, used_strings) for i in range(count)]
-        # Modify some fields for the upsert test
-        for i, model in enumerate(models):
-            model.string_field = f"upsert_{i}"
-            model.status = choice(STATUSES)
-            model.priority = randint(1, 10)
-        # Set IDs for existing records to simulate updates
-        existing_records = list(TestComplexModel.objects.all())
-        for i, existing in enumerate(existing_records):
-            if i < len(models):
-                models[i].id = existing.id
-        
-        # Test bulk_upsert_models with use_merge=False (legacy approach)
-        if count >= 100_000:
-            legacy_time = safe_execute_with_retry(
-                lambda: bulk_upsert_models(models, use_merge=False),
-                "bulk_upsert_models (legacy)"
+        # Legacy
+        models = _setup_upsert_test_data(count, "legacy")
+        use_batching = count >= 100_000
+        if use_batching:
+            legacy_time = _time_operation(
+                lambda batch: bulk_upsert_models(batch, use_merge=False, use_unlogged=False, use_copy=False),
+                "bulk_upsert_models (legacy)",
+                use_batching=True,
+                models=models,
+                batch_size=batch_size
             )
-            if legacy_time:
-                print(f"bulk_upsert_models (legacy):      {legacy_time}")
         else:
-            start = time()
-            try:
-                bulk_upsert_models(models, use_merge=False)
-                legacy_time = time() - start
-                print(f"bulk_upsert_models (legacy):      {legacy_time}")
-            except Exception as e:
-                print(f"bulk_upsert_models (legacy):      Failed - {e}")
-                legacy_time = None
-        
-        # Reset database for next test
-        clear_database()
-        used_integers = set()
-        used_strings = set()
-        existing_models = [generate_realistic_model(i, used_integers, used_strings) for i in range(0, count // 2)]
-        TestComplexModel.objects.bulk_create(existing_models)
-        
-        # Prepare models again
-        used_integers = set()
-        used_strings = set()
-        models = [generate_realistic_model(i, used_integers, used_strings) for i in range(count)]
-        # Modify some fields for the merge upsert test
-        for i, model in enumerate(models):
-            model.string_field = f"merge_upsert_{i}"
-            model.status = choice(STATUSES)
-            model.priority = randint(1, 10)
-        existing_records = list(TestComplexModel.objects.all())
-        for i, existing in enumerate(existing_records):
-            if i < len(models):
-                models[i].id = existing.id
-        
-        # Test bulk_upsert_models with use_merge=True (MERGE approach)
-        if count >= 100_000:
-            merge_time = safe_execute_with_retry(
-                lambda: bulk_upsert_models(models, use_merge=True),
-                "bulk_upsert_models (merge)"
+            legacy_time = _time_operation(
+                lambda: bulk_upsert_models(models, use_merge=False, use_unlogged=False, use_copy=False),
+                "bulk_upsert_models (legacy)",
+                use_batching=False
             )
-            if merge_time:
-                print(f"bulk_upsert_models (merge):       {merge_time}")
+        
+        # use_unlogged
+        _clear_database()
+        models = _setup_upsert_test_data(count, "unlogged")
+        if use_batching:
+            unlogged_time = _time_operation(
+                lambda batch: bulk_upsert_models(batch, use_merge=False, use_unlogged=True, use_copy=False),
+                "bulk_upsert_models (use_unlogged)",
+                use_batching=True,
+                models=models,
+                batch_size=batch_size
+            )
         else:
-            start = time()
-            try:
-                bulk_upsert_models(models, use_merge=True)
-                merge_time = time() - start
-                print(f"bulk_upsert_models (merge):       {merge_time}")
-            except Exception as e:
-                print(f"bulk_upsert_models (merge):       Failed - {e}")
-                merge_time = None
+            unlogged_time = _time_operation(
+                lambda: bulk_upsert_models(models, use_merge=False, use_unlogged=True, use_copy=False),
+                "bulk_upsert_models (use_unlogged)",
+                use_batching=False
+            )
         
-        # Test bulk_upsert_models with use_copy=True (fastest approach)
-        start = time()
-        try:
-            bulk_upsert_models(models, use_copy=True)
-            copy_time = time() - start
-            print(f"bulk_upsert_models (COPY):         {copy_time}")
-        except Exception as e:
-            print(f"bulk_upsert_models (COPY):         Failed - {e}")
-            copy_time = None
+        # use_merge
+        _clear_database()
+        models = _setup_upsert_test_data(count, "merge")
+        if use_batching:
+            merge_time = _time_operation(
+                lambda batch: bulk_upsert_models(batch, use_merge=True, use_unlogged=False, use_copy=False),
+                "bulk_upsert_models (use_merge)",
+                use_batching=True,
+                models=models,
+                batch_size=batch_size
+            )
+        else:
+            merge_time = _time_operation(
+                lambda: bulk_upsert_models(models, use_merge=True, use_unlogged=False, use_copy=False),
+                "bulk_upsert_models (use_merge)",
+                use_batching=False
+            )
         
-        # Show performance comparison
-        if legacy_time and merge_time:
-            if merge_time < legacy_time:
-                improvement = legacy_time / merge_time
-                print(f"MERGE vs Legacy:                  {improvement:.1f}x faster")
-            else:
-                improvement = merge_time / legacy_time
-                print(f"MERGE vs Legacy:                  {improvement:.1f}x slower")
-        if legacy_time and copy_time:
-            if copy_time < legacy_time:
-                improvement = legacy_time / copy_time
-                print(f"COPY vs Legacy:                   {improvement:.1f}x faster")
-            else:
-                improvement = copy_time / legacy_time
-                print(f"COPY vs Legacy:                   {improvement:.1f}x slower")
+        # use_copy
+        _clear_database()
+        models = _setup_upsert_test_data(count, "copy")
+        if use_batching:
+            copy_time = _time_operation(
+                lambda batch: bulk_upsert_models(batch, use_merge=False, use_unlogged=False, use_copy=True),
+                "bulk_upsert_models (use_copy)",
+                use_batching=True,
+                models=models,
+                batch_size=batch_size
+            )
+        else:
+            copy_time = _time_operation(
+                lambda: bulk_upsert_models(models, use_merge=False, use_unlogged=False, use_copy=True),
+                "bulk_upsert_models (use_copy)",
+                use_batching=False
+            )
         
         print()
-        clear_database()
-
+        print(f"Results for {count:,} records:")
+        print(f"  Legacy:      {legacy_time:.3f} seconds")
+        print(f"  Unlogged:    {unlogged_time:.3f} seconds")
+        print(f"  Merge:       {merge_time:.3f} seconds")
+        print(f"  Copy:        {copy_time:.3f} seconds")
+        
+        if legacy_time:
+            if unlogged_time:
+                if unlogged_time < legacy_time:
+                    print(f"  Unlogged is {legacy_time/unlogged_time:.2f}x faster than legacy")
+                else:
+                    print(f"  Unlogged is {unlogged_time/legacy_time:.2f}x slower than legacy")
+            
+            if merge_time:
+                if merge_time < legacy_time:
+                    print(f"  Merge is {legacy_time/merge_time:.2f}x faster than legacy")
+                else:
+                    print(f"  Merge is {merge_time/legacy_time:.2f}x slower than legacy")
+            
+            if copy_time:
+                if copy_time < legacy_time:
+                    print(f"  Copy is {legacy_time/copy_time:.2f}x faster than legacy")
+                else:
+                    print(f"  Copy is {copy_time/legacy_time:.2f}x slower than legacy")
+        
+        print()
+        _clear_database()
 
 def main():
-    """Run performance benchmarks comparing legacy vs MERGE approaches"""
     print("Django Bulk Load Performance Benchmarks")
-    print("Legacy vs MERGE Approach Comparison")
+    print("Legacy vs use_unlogged Upsert Comparison")
     print("HEAVILY INDEXED TABLE SCENARIO")
     print("=" * 60)
     print()
-    
     try:
-        # Ensure database is ready
-        from django.core.management import execute_from_command_line
         execute_from_command_line(['manage.py', 'migrate'])
-        
-        run_bulk_update_benchmarks()
         run_bulk_upsert_benchmarks()
-        
-        print("=" * 60)
-        print("BENCHMARKS COMPLETE")
-        print("=" * 60)
-        
-    except KeyboardInterrupt:
-        print("\nBenchmarks interrupted by user")
-        sys.exit(1)
     except Exception as e:
         print(f"Error running benchmarks: {e}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main() 

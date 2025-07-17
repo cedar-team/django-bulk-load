@@ -16,10 +16,42 @@ def create_temp_table(temp_table_name, source_table_name, column_names):
         ),
     )
 
+
+def create_unlogged_temp_table(temp_table_name, source_table_name, column_names):
+    """
+    Create an UNLOGGED temporary table for maximum performance.
+    UNLOGGED tables skip WAL logging, making them much faster for bulk operations.
+    Use only when data can be regenerated or when performance is critical.
+    """
+    return SQL(
+        "CREATE UNLOGGED TEMPORARY TABLE {temp_table_name} ON COMMIT DROP AS "
+        "SELECT {column_list} FROM {source_table_name} WITH NO DATA"
+    ).format(
+        source_table_name=Identifier(source_table_name),
+        temp_table_name=Identifier(temp_table_name),
+        column_list=SQL(", ").join(
+            [Identifier(column_name) for column_name in column_names]
+        ),
+    )
+
+
 def copy_query(table_name: str):
     return SQL("COPY {table_name} FROM STDIN NULL '\\N' DELIMITER '\t' CSV").format(
         table_name=Identifier(table_name)
     )
+
+
+def copy_query_optimized(table_name: str):
+    """
+    Optimized COPY query with performance settings.
+    """
+    return SQL(
+        "COPY {table_name} FROM STDIN NULL '\\N' DELIMITER '\t' CSV "
+        "WITH (FREEZE, PARALLEL WORKERS 4)"
+    ).format(
+        table_name=Identifier(table_name)
+    )
+
 
 def add_returning(query: Composable, table_name: str) -> Composable:
     return Composed(
@@ -759,3 +791,238 @@ def generate_merge_update_query(
     )
     
     return merge_query
+
+
+def generate_parallel_insert_query(
+    table_name: str,
+    loading_table_name: str,
+    insert_fields: Sequence[models.Field],
+    ignore_conflicts: bool = False,
+    parallel_workers: int = 4,
+) -> Composable:
+    """
+    Generate a parallel INSERT query using PostgreSQL's parallel processing capabilities.
+    This can significantly improve performance for large datasets.
+    
+    :param table_name: Name of the target table
+    :param loading_table_name: Name of the source table
+    :param insert_fields: Fields to insert
+    :param ignore_conflicts: Whether to ignore conflicts
+    :param parallel_workers: Number of parallel workers to use
+    :return: Parallel INSERT query as Composable
+    """
+    base_query = SQL(
+        "INSERT INTO {table_name} ({insert_column_list}) "
+        "SELECT {select_column_list} FROM {loading_table_name}"
+    ).format(
+        table_name=Identifier(table_name),
+        insert_column_list=SQL(", ").join(
+            Identifier(field.column) for field in insert_fields
+        ),
+        select_column_list=SQL(", ").join(
+            SQL(".").join((Identifier(loading_table_name), Identifier(x.column)))
+            for x in insert_fields
+        ),
+        loading_table_name=Identifier(loading_table_name),
+    )
+    
+    # Add parallel processing hints
+    parallel_hint = SQL("/*+ PARALLEL({workers}) */").format(workers=SQL(str(parallel_workers)))
+    
+    if ignore_conflicts:
+        return Composed([
+            parallel_hint,
+            base_query,
+            SQL(" ON CONFLICT DO NOTHING"),
+        ])
+    
+    return Composed([parallel_hint, base_query])
+
+
+def generate_parallel_update_query(
+    table_name: str,
+    loading_table_name: str,
+    pk_fields: Sequence[models.Field],
+    update_fields: Sequence[models.Field],
+    compare_fields: Sequence[models.Field] = None,
+    update_where: Callable[[Sequence[models.Field], str, str], Composable] = None,
+    update_if_null_fields: Sequence[models.Field] = None,
+    parallel_workers: int = 4,
+) -> Composable:
+    """
+    Generate a parallel UPDATE query using PostgreSQL's parallel processing capabilities.
+    
+    :param table_name: Name of the target table
+    :param loading_table_name: Name of the source table
+    :param pk_fields: Primary key fields for matching
+    :param update_fields: Fields to update
+    :param compare_fields: Fields to compare for determining if update is needed
+    :param update_where: Custom WHERE condition function
+    :param update_if_null_fields: Fields that only get updated if NULL
+    :param parallel_workers: Number of parallel workers to use
+    :return: Parallel UPDATE query as Composable
+    """
+    # Generate the base UPDATE query
+    base_query = generate_update_query(
+        table_name=table_name,
+        loading_table_name=loading_table_name,
+        pk_fields=pk_fields,
+        update_fields=update_fields,
+        compare_fields=compare_fields,
+        update_where=update_where,
+        update_if_null_fields=update_if_null_fields,
+    )
+    
+    # Add parallel processing hints
+    parallel_hint = SQL("/*+ PARALLEL({workers}) */").format(workers=SQL(str(parallel_workers)))
+    
+    return Composed([parallel_hint, base_query])
+
+
+def generate_parallel_upsert_query(
+    table_name: str,
+    loading_table_name: str,
+    pk_fields: Sequence[models.Field],
+    update_fields: Sequence[models.Field],
+    insert_fields: Sequence[models.Field],
+    compare_fields: Sequence[models.Field] = None,
+    update_where: Callable[[Sequence[models.Field], str, str], Composable] = None,
+    update_if_null_fields: Sequence[models.Field] = None,
+    parallel_workers: int = 4,
+) -> Composable:
+    """
+    Generate a parallel UPSERT query using PostgreSQL's parallel processing capabilities.
+    
+    :param table_name: Name of the target table
+    :param loading_table_name: Name of the source table
+    :param pk_fields: Primary key fields for matching
+    :param update_fields: Fields to update when matched
+    :param insert_fields: Fields to insert when not matched
+    :param compare_fields: Fields to compare for determining if update is needed
+    :param update_where: Custom WHERE condition function
+    :param update_if_null_fields: Fields that only get updated if NULL
+    :param parallel_workers: Number of parallel workers to use
+    :return: Parallel UPSERT query as Composable
+    """
+    # Generate the base MERGE query
+    base_query = generate_merge_upsert_query(
+        table_name=table_name,
+        loading_table_name=loading_table_name,
+        pk_fields=pk_fields,
+        update_fields=update_fields,
+        insert_fields=insert_fields,
+        compare_fields=compare_fields,
+        update_where=update_where,
+        update_if_null_fields=update_if_null_fields,
+    )
+    
+    # Add parallel processing hints
+    parallel_hint = SQL("/*+ PARALLEL({workers}) */").format(workers=SQL(str(parallel_workers)))
+    
+    return Composed([parallel_hint, base_query])
+
+
+def generate_partitioned_insert_query(
+    table_name: str,
+    loading_table_name: str,
+    insert_fields: Sequence[models.Field],
+    partition_key: str,
+    partition_values: list,
+    ignore_conflicts: bool = False,
+) -> Composable:
+    """
+    Generate a partitioned INSERT query for tables with partitioning.
+    This can improve performance by targeting specific partitions.
+    
+    :param table_name: Name of the target table
+    :param loading_table_name: Name of the source table
+    :param insert_fields: Fields to insert
+    :param partition_key: Name of the partition key column
+    :param partition_values: List of partition values to target
+    :param ignore_conflicts: Whether to ignore conflicts
+    :return: Partitioned INSERT query as Composable
+    """
+    # Build partition filter
+    partition_filter = SQL(" OR ").join(
+        SQL("{partition_key} = {value}").format(
+            partition_key=Identifier(partition_key),
+            value=SQL(str(value))
+        ) for value in partition_values
+    )
+    
+    base_query = SQL(
+        "INSERT INTO {table_name} ({insert_column_list}) "
+        "SELECT {select_column_list} FROM {loading_table_name} "
+        "WHERE {partition_filter}"
+    ).format(
+        table_name=Identifier(table_name),
+        insert_column_list=SQL(", ").join(
+            Identifier(field.column) for field in insert_fields
+        ),
+        select_column_list=SQL(", ").join(
+            SQL(".").join((Identifier(loading_table_name), Identifier(x.column)))
+            for x in insert_fields
+        ),
+        loading_table_name=Identifier(loading_table_name),
+        partition_filter=partition_filter,
+    )
+    
+    if ignore_conflicts:
+        return Composed([
+            base_query,
+            SQL(" ON CONFLICT DO NOTHING"),
+        ])
+    
+    return base_query
+
+
+def generate_optimized_copy_query(
+    table_name: str,
+    options: dict = None,
+) -> Composable:
+    """
+    Generate an optimized COPY query with various performance options.
+    
+    :param table_name: Name of the target table
+    :param options: Dictionary of COPY options
+                  - freeze: bool - Use FREEZE option
+                  - parallel_workers: int - Number of parallel workers
+                  - encoding: str - Character encoding
+                  - format: str - Format (csv, text, binary)
+    :return: Optimized COPY query as Composable
+    """
+    options = options or {}
+    
+    # Build COPY options
+    copy_options = []
+    
+    if options.get('freeze', False):
+        copy_options.append(SQL("FREEZE"))
+    
+    if options.get('parallel_workers'):
+        copy_options.append(SQL("PARALLEL WORKERS {workers}").format(
+            workers=SQL(str(options['parallel_workers']))
+        ))
+    
+    if options.get('encoding'):
+        copy_options.append(SQL("ENCODING '{encoding}'").format(
+            encoding=SQL(options['encoding'])
+        ))
+    
+    if options.get('format'):
+        copy_options.append(SQL("FORMAT {format}").format(
+            format=SQL(options['format'])
+        ))
+    
+    # Build the complete COPY query
+    base_copy = SQL("COPY {table_name} FROM STDIN NULL '\\N' DELIMITER '\t' CSV").format(
+        table_name=Identifier(table_name)
+    )
+    
+    if copy_options:
+        return SQL("{base_copy} WITH ({options})").format(
+            base_copy=base_copy,
+            options=SQL(", ").join(copy_options)
+        )
+    
+    return base_copy

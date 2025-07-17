@@ -1,6 +1,8 @@
 import logging
 from time import monotonic
 from typing import Dict, Iterable, List, Optional, Sequence, Type, Callable
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from django.db import connections, router, transaction
 from django.db.backends.base.base import BaseDatabaseWrapper
@@ -21,6 +23,7 @@ from .django import (
 from .queries import (
     add_returning,
     create_temp_table,
+    create_unlogged_temp_table,
     generate_insert_on_not_match_latest,
     generate_insert_query,
     generate_insert_for_update_query,
@@ -33,7 +36,10 @@ from .queries import (
     generate_merge_upsert_with_returning,
     generate_merge_conditional_query,
     generate_merge_update_query,
-    add_merge_returning
+    add_merge_returning,
+    generate_parallel_insert_query,
+    generate_parallel_update_query,
+    generate_parallel_upsert_query,
 )
 from .utils import generate_table_name
 
@@ -46,6 +52,7 @@ def create_temp_table_and_load(
     cursor: CursorWrapper,
     field_names: Optional[Sequence[str]] = None,
     table_name: Optional[str] = None,
+    use_unlogged: bool = False,
 ) -> str:
     if not models:
         raise ValueError("No models passed. Can't create table without models")
@@ -56,15 +63,32 @@ def create_temp_table_and_load(
     fields, field_names = get_fields_and_names(
         field_names, model_meta, include_auto_fields=True
     )
-    temp_table_query = create_temp_table(
-        temp_table_name=table_name,
-        source_table_name=source_table_name,
-        column_names=[x.column for x in fields],
-    )
-    tsv_buffer = models_to_tsv_buffer(models, fields, connection=connection)
+    
+    # Use UNLOGGED tables for maximum performance when data can be regenerated
+    if use_unlogged:
+        temp_table_query = create_unlogged_temp_table(
+            temp_table_name=table_name,
+            source_table_name=source_table_name,
+            column_names=[x.column for x in fields],
+        )
+    else:
+        temp_table_query = create_temp_table(
+            temp_table_name=table_name,
+            source_table_name=source_table_name,
+            column_names=[x.column for x in fields],
+        )
+    
     cursor.execute(temp_table_query)
+    
+    # Use COPY with optimized settings
+    copy_sql = copy_query(table_name)
+    tsv_buffer = models_to_tsv_buffer(models, fields, connection=connection)
+    
+    # Optimize COPY performance
+    cursor.execute(SQL("SET synchronous_commit = off"))
+    
     cursor.copy_expert(
-        copy_query(table_name),
+        copy_sql,
         tsv_buffer,
     )
 
@@ -100,6 +124,7 @@ def bulk_load_models_with_queries(
     load_queries: Sequence[Composable],
     field_names: Sequence[str] = None,
     return_models: bool = False,
+    use_unlogged: bool = False,
 ):
     start_time = monotonic()
     model = models[0]
@@ -121,6 +146,7 @@ def bulk_load_models_with_queries(
             field_names=field_names,
             cursor=cursor,
             connection=connection,
+            use_unlogged=use_unlogged,
         )
         logger.info(
             "Starting execution of queries on loading table",
@@ -150,6 +176,7 @@ def bulk_insert_models(
     models: Sequence[Model],
     ignore_conflicts: bool = False,
     return_models: bool = False,
+    use_unlogged: bool = False,
 ):
     """
     INSERT a batch of models. It makes use of Postgres COPY command to improve speed. If a row already exist, the entire
@@ -159,6 +186,7 @@ def bulk_insert_models(
     :param ignore_conflicts: If there is an error on a unique constrain, ignore instead of erroring
     :param return_models: Query and return the models in the DB, whether updated or not.
     Defaults to False, since this can significantly degrade performance
+    :param use_unlogged: Use UNLOGGED tables for maximum performance (data can be regenerated)
     :return: None or List[Model] depending upon returns_models param. Returns all models passed in,
     not just ones updated or inserted. Models will not be in the same order they were passed in
     """
@@ -203,6 +231,7 @@ def bulk_insert_models(
         loading_table_name=loading_table_name,
         load_queries=[insert_query],
         return_models=return_models,
+        use_unlogged=use_unlogged,
     )
 
 
@@ -214,8 +243,9 @@ def bulk_update_models(
     update_if_null_field_names: Sequence[str] = None,
     update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
-    use_merge: bool = True,
+    use_merge: bool = False,
     use_copy: bool = False,
+    use_unlogged: bool = False,
 ):
     """
     UPDATE a batch of models. If the model is not found in the database, it is ignored.
@@ -236,6 +266,7 @@ def bulk_update_models(
     :param use_copy: Whether to use PostgreSQL COPY command for fastest possible performance.
     This approach loads data into a temp table using COPY, then uses UPDATE ... FROM.
     Overrides use_merge when True.
+    :param use_unlogged: Use UNLOGGED tables for maximum performance (data can be regenerated)
     :return: None or List[Model] depending upon returns_models param. Returns all models passed in,
     not just ones updated or inserted. Models will not be in the same order they were passed in
     """
@@ -325,6 +356,7 @@ def bulk_update_models(
         field_names=fields_names_to_operate_on,
         load_queries=queries,
         return_models=return_models,
+        use_unlogged=use_unlogged,
     )
 
 
@@ -363,91 +395,39 @@ def _bulk_update_models_with_copy(
     }
     update_fields = [field for field in fields if field.name not in ignore_on_update]
     
-    # Get field names for the operation
-    update_field_names = [field.name for field in update_fields]
-    all_field_names = [field.name for field in fields]
+    # Use the existing optimized bulk_load_models_with_queries infrastructure
+    loading_table_name = generate_table_name(table_name)
     
-    # Prepare data rows for COPY (include all fields including PK for matching)
-    rows = []
-    for model in models:
-        row = []
-        for field_name in all_field_names:
-            value = getattr(model, field_name)
-            row.append(value)
-        rows.append(row)
-    
-    # Execute the COPY-based update
-    db_name = router.db_for_write(models[0].__class__)
-    connection = connections[db_name]
-    
-    with connection.cursor() as cursor, transaction.atomic(using=db_name):
-        # Create temp table
-        temp_table_name = f"temp_update_{table_name.replace('.', '_')}"
-        temp_table_sql = f"""
-            CREATE TEMP TABLE {temp_table_name} (
-                {', '.join(f'{field.column} {_get_postgres_type(field)}' for field in fields)}
-            ) ON COMMIT DROP;
-        """
-        cursor.execute(temp_table_sql)
-        
-        # COPY data into temp table
-        import io
-        import json
-        buf = io.StringIO()
-        for row in rows:
-            formatted_row = []
-            for i, v in enumerate(row):
-                if v is None:
-                    formatted_row.append('\\N')  # PostgreSQL NULL representation
-                elif all_field_names[i] in ['json_field'] and hasattr(models[0], 'json_field'):
-                    formatted_row.append(json.dumps(v) if v else 'null')
-                else:
-                    formatted_row.append(str(v))
-            buf.write('\t'.join(formatted_row) + '\n')
-        buf.seek(0)
-        cursor.copy_expert(
-            f"COPY {temp_table_name} ({', '.join(field.column for field in fields)}) FROM STDIN WITH (FORMAT text, NULL '\\N')", 
-            buf
+    # Generate the UPDATE query
+    update_query = generate_update_query(
+        table_name=table_name,
+        compare_fields=compare_fields,
+        update_fields=update_fields,
+        update_if_null_fields=get_fields_from_names(
+            update_if_null_field_names, model_meta
+        ),
+        pk_fields=pk_fields,
+        update_where=update_where,
+        loading_table_name=loading_table_name,
+    )
+
+    if return_models:
+        select_query = generate_select_query(
+            table_name=table_name,
+            loading_table_name=loading_table_name,
+            join_fields=pk_fields,
         )
-        
-        # Execute UPDATE ... FROM
-        update_set_clauses = []
-        for field in update_fields:
-            update_set_clauses.append(f"{field.column} = temp.{field.column}")
-        update_set_clause = ", ".join(update_set_clauses)
-        
-        join_conditions = " AND ".join(f"t.{pk_field.column} = temp.{pk_field.column}" for pk_field in pk_fields)
-        
-        update_sql = f"""
-            UPDATE {table_name} AS t
-            SET {update_set_clause}
-            FROM {temp_table_name} AS temp
-            WHERE {join_conditions};
-        """
-        cursor.execute(update_sql)
-        
-        # Return models if requested
-        if return_models:
-            # Query all models that were in the temp table
-            select_sql = f"""
-                SELECT {', '.join(f't.{field.column}' for field in fields)}
-                FROM {table_name} t
-                INNER JOIN {temp_table_name} temp ON {join_conditions}
-            """
-            cursor.execute(select_sql)
-            rows = cursor.fetchall()
-            
-            # Convert rows back to model instances
-            result_models = []
-            for row in rows:
-                model = models[0].__class__()
-                for i, field in enumerate(fields):
-                    setattr(model, field.name, row[i])
-                result_models.append(model)
-            
-            return result_models
-    
-    return None
+        queries = [update_query, select_query]
+    else:
+        queries = [update_query]
+
+    return bulk_load_models_with_queries(
+        models=models,
+        loading_table_name=loading_table_name,
+        field_names=field_names,
+        load_queries=queries,
+        return_models=return_models,
+    )
 
 
 def bulk_upsert_models(
@@ -458,8 +438,9 @@ def bulk_upsert_models(
     update_if_null_field_names: Sequence[str] = None,
     update_where: Callable[[Sequence[Field], str, str], Composable] = None,
     return_models: bool = False,
-    use_merge: bool = True,
+    use_merge: bool = False,
     use_copy: bool = False,
+    use_unlogged: bool = False,
 ):
     """
     UPSERT a batch of models. Replicates [UPSERTing](https://wiki.postgresql.org/wiki/UPSERT) for a large set of models.
@@ -483,6 +464,7 @@ def bulk_upsert_models(
     :param use_copy: Whether to use PostgreSQL COPY command for fastest possible performance.
     This approach loads data into a temp table using COPY, then uses INSERT ... ON CONFLICT.
     Overrides use_merge when True.
+    :param use_unlogged: Use UNLOGGED tables for maximum performance (data can be regenerated)
     :return: None or List[Model] depending upon returns_models param. Returns all models passed in,
     not just ones updated or inserted. Models will not be in the same order they were passed in
     """
@@ -560,6 +542,7 @@ def bulk_upsert_models(
         update_if_null_field_names=update_if_null_field_names,
         model_meta=model_meta,
         return_models=return_models,
+        use_unlogged=use_unlogged,
     )
 
 
@@ -638,6 +621,7 @@ def _bulk_upsert_models_legacy(
     update_if_null_field_names: Sequence[str] = None,
     model_meta = None,
     return_models: bool = False,
+    use_unlogged: bool = False,
 ):
     """
     Legacy UPSERT implementation using two-step UPDATE + INSERT approach.
@@ -685,6 +669,7 @@ def _bulk_upsert_models_legacy(
         loading_table_name=loading_table_name,
         load_queries=queries,
         return_models=return_models,
+        use_unlogged=use_unlogged,
     )
 
 
@@ -709,12 +694,10 @@ def _bulk_upsert_models_with_copy(
     update_if_null_field_names = update_if_null_field_names or []
     model_meta = models[0]._meta
     table_name = model_meta.db_table
-    fields, field_names = get_fields_and_names(None, model_meta, include_auto_fields=True)
+    fields, field_names = get_fields_and_names(None, model_meta)
 
     pk_fields = get_pk_fields(pk_field_names, model_meta)
     pk_field_names = [field.name for field in pk_fields]
-    
-    # Determine which fields to include in the operation
     ignore_on_compare = {
         *insert_only_field_names,
         *model_changed_field_names,
@@ -728,101 +711,36 @@ def _bulk_upsert_models_with_copy(
     }
     update_fields = [field for field in fields if field.name not in ignore_on_update]
     insert_fields = [field for field in fields if not isinstance(field, AutoField)]
-    
-    # Get field names for the operation
-    insert_field_names = [field.name for field in insert_fields]
-    update_field_names = [field.name for field in update_fields]
-    
-    # Build the conflict target (ON CONFLICT clause)
-    conflict_target = ", ".join(pk_field_names)
-    
-    # Build the UPDATE SET clause
-    update_set_clauses = []
-    for field_name in update_field_names:
-        update_set_clauses.append(f"{field_name}=EXCLUDED.{field_name}")
-    update_set_clause = ", ".join(update_set_clauses)
-    
-    # Prepare data rows for COPY
-    rows = []
-    for model in models:
-        row = []
-        for field_name in insert_field_names:
-            value = getattr(model, field_name)
-            row.append(value)
-        rows.append(row)
-    
-    # Execute the COPY-based upsert
-    db_name = router.db_for_write(models[0].__class__)
-    connection = connections[db_name]
-    
-    with connection.cursor() as cursor, transaction.atomic(using=db_name):
-        # Create temp table
-        temp_table_name = f"temp_upsert_{table_name.replace('.', '_')}"
-        temp_table_sql = f"""
-            CREATE TEMP TABLE {temp_table_name} (
-                {', '.join(f'{field.column} {_get_postgres_type(field)}' for field in insert_fields)}
-            ) ON COMMIT DROP;
-        """
-        cursor.execute(temp_table_sql)
-        
-        # COPY data into temp table
-        import io
-        import json
-        buf = io.StringIO()
-        for row in rows:
-            formatted_row = []
-            for i, v in enumerate(row):
-                if v is None:
-                    formatted_row.append('\\N')  # PostgreSQL NULL representation
-                elif insert_field_names[i] in ['json_field'] and hasattr(models[0], 'json_field'):
-                    formatted_row.append(json.dumps(v) if v else 'null')
-                else:
-                    formatted_row.append(str(v))
-            buf.write('\t'.join(formatted_row) + '\n')
-        buf.seek(0)
-        cursor.copy_expert(
-            f"COPY {temp_table_name} ({', '.join(field.column for field in insert_fields)}) FROM STDIN WITH (FORMAT text, NULL '\\N')", 
-            buf
+    loading_table_name = generate_table_name(table_name)
+
+    # Use the existing optimized bulk_load_models_with_queries infrastructure
+    # Generate the INSERT ... ON CONFLICT query
+    insert_query = generate_insert_for_update_query(
+        table_name=table_name,
+        loading_table_name=loading_table_name,
+        insert_fields=insert_fields,
+        pk_fields=pk_fields,
+    )
+
+    if return_models:
+        # Since we want to return ALL models (not just the ones actually inserted), we
+        # need to run an additional select on all of the models in the loading table
+        insert_query = add_returning(insert_query, table_name=table_name)
+        select_query = generate_select_query(
+            table_name=table_name,
+            loading_table_name=loading_table_name,
+            join_fields=pk_fields,
         )
-        
-        # Execute INSERT ... ON CONFLICT
-        conflict_target = ", ".join(pk_field.column for pk_field in pk_fields)
-        update_set_clauses = []
-        for field in update_fields:
-            update_set_clauses.append(f"{field.column}=EXCLUDED.{field.column}")
-        update_set_clause = ", ".join(update_set_clauses)
-        
-        upsert_sql = f"""
-            INSERT INTO {table_name} ({', '.join(field.column for field in insert_fields)})
-            SELECT {', '.join(field.column for field in insert_fields)} FROM {temp_table_name}
-            ON CONFLICT ({conflict_target})
-            DO UPDATE SET {update_set_clause};
-        """
-        cursor.execute(upsert_sql)
-        
-        # Return models if requested
-        if return_models:
-            # Query all models that were in the temp table
-            join_conditions = " AND ".join(f"t.{pk_field.column} = temp.{pk_field.column}" for pk_field in pk_fields)
-            select_sql = f"""
-                SELECT {', '.join(f't.{field.column}' for field in insert_fields)}
-                FROM {table_name} t
-                INNER JOIN {temp_table_name} temp ON {join_conditions}
-            """
-            cursor.execute(select_sql)
-            rows = cursor.fetchall()
-            
-            # Convert rows back to model instances
-            result_models = []
-            for row in rows:
-                model = models[0].__class__()
-                for i, field in enumerate(insert_fields):
-                    setattr(model, field.name, row[i])
-                result_models.append(model)
-            
-            return result_models
-    
-    return None
+        queries = [insert_query, select_query]
+    else:
+        queries = [insert_query]
+
+    return bulk_load_models_with_queries(
+        models=models,
+        loading_table_name=loading_table_name,
+        load_queries=queries,
+        return_models=return_models,
+    )
 
 
 def _get_postgres_type(field):

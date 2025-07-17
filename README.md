@@ -10,7 +10,8 @@ Note: Currently, this library only supports Postgres. Other databases may be add
 pip install django-bulk-load
 ```
 
-## Benchmarks
+## Benchmarks vs Django's built-in bulk_update
+
 ### bulk_update_models vs [Django's bulk_update](https://docs.djangoproject.com/en/dev/ref/models/querysets/#bulk-update) vs [django-bulk-update](https://github.com/aykut/django-bulk-update)
 
 #### Results
@@ -92,6 +93,8 @@ def run_bulk_insert_models():
   bulk_insert_models(models)
   print(time() - start)
 ```
+
+TODO: add benchmarks here for merge and copy
 
 ## API
 Just import and use the functions below. No need to change settings.py

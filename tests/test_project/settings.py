@@ -47,18 +47,6 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 if len(sys.argv) > 1 and sys.argv[1] == 'test':
     logging.disable(logging.CRITICAL)
 
-# class DisableMigrations(object):
-#     def __contains__(self, item):
-#         return True
-#
-#     def __getitem__(self, item):
-#         return None
-#
-# # Enable migrations for performance tests
-# if len(sys.argv) > 1 and sys.argv[1] == 'perf.py':
-#     MIGRATION_MODULES = {}
-# else:
-#     MIGRATION_MODULES = DisableMigrations()
 
 MIDDLEWARE = []
 

@@ -13,9 +13,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
+          cpus: '2.0'
         reservations:
-          memory: 1G
+          memory: 2G
+          cpus: '1.0'
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U postgres" ]
       interval: 5s
@@ -26,10 +28,32 @@ services:
       - POSTGRES_INITDB_ARGS=--auth-host=md5
     command: >
       postgres
-      -c shared_buffers=256MB
-      -c effective_cache_size=1GB
-      -c maintenance_work_mem=256MB
-      -c work_mem=32MB
+      -c shared_buffers=1GB
+      -c effective_cache_size=3GB
+      -c maintenance_work_mem=512MB
+      -c work_mem=128MB
       -c max_connections=100
       -c random_page_cost=1.1
-      -c temp_buffers=16MB
+      -c temp_buffers=256MB
+      -c max_wal_size=4GB
+      -c checkpoint_completion_target=0.9
+      -c wal_buffers=64MB
+      -c default_statistics_target=2000
+      -c autovacuum=off
+      -c fsync=on
+      -c synchronous_commit=off
+      -c full_page_writes=off
+      -c checkpoint_timeout=1h
+      -c max_wal_senders=0
+      -c wal_level=minimal
+      -c wal_compression=on
+      -c max_prepared_transactions=0
+      -c track_activities=off
+      -c track_counts=off
+      -c track_io_timing=off
+      -c track_functions=none
+      -c log_statement=none
+      -c log_min_duration_statement=-1
+      -c log_checkpoints=off
+      -c log_connections=off
+      -c log_disconnections=off
