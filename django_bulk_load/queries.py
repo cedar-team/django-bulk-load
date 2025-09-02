@@ -290,15 +290,28 @@ def generate_update_query(
             else:
                 where_clause = distinct_null_clause
 
+    # Check if where_clause is actually empty by checking if compare_fields was empty
+    # and no update_if_null_fields were provided
+    has_where_conditions = (
+        (compare_fields and not update_where) or 
+        update_if_null_fields or 
+        update_where
+    )
+    
+    if has_where_conditions:
+        final_where_clause = SQL("({where_clause}) AND ({join_clause})").format(
+            where_clause=where_clause, join_clause=join_clause
+        )
+    else:
+        final_where_clause = join_clause
+
     return SQL(
         "UPDATE {table_name} SET {update_clause} FROM {loading_table_name} WHERE {where_clause}"
     ).format(
         table_name=Identifier(table_name),
         update_clause=update_clause,
         loading_table_name=Identifier(loading_table_name),
-        where_clause=SQL("({where_clause}) AND ({join_clause})").format(
-            where_clause=where_clause, join_clause=join_clause
-        ) if where_clause else join_clause
+        where_clause=final_where_clause
     )
 
 

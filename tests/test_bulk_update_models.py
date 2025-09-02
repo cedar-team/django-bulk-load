@@ -2,6 +2,8 @@ from datetime import datetime, timezone
 
 from django.test import TestCase
 from django_bulk_load import bulk_update_models, generate_greater_than_condition
+from django_bulk_load.queries import generate_update_query
+from django_bulk_load.django import get_fields_from_names
 from .test_project.models import (
     TestComplexModel,
     TestForeignKeyModel,
@@ -372,3 +374,100 @@ class E2ETestBulkUpdateModels(TestCase):
         # Second model should not be updated because 2 <  3
         saved_model2 = TestComplexModel.objects.get(integer_field=3)
         self.assertEqual(saved_model2.string_field, "c")
+
+    def test_empty_where_clause_with_model_changed_fields_only(self):
+        """
+        Test the case where where_clause ends up empty in generate_update_query.
+        This happens when all update fields are marked as model_changed_field_names,
+        resulting in empty compare_fields and no update_if_null_fields.
+        """
+        # Create a model with some initial values
+        model1 = TestComplexModel(
+            integer_field=1,
+            string_field="initial_value",
+        )
+        model1.save()
+        
+        # Modify the model
+        model1.integer_field = 2
+        model1.string_field = "updated_value"
+
+        # Update using only model_changed_field_names
+        # This will result in empty compare_fields because all update fields
+        # are in the ignore_on_compare set, leading to an empty where_clause
+        bulk_update_models(
+            [model1],
+            update_field_names=["integer_field", "string_field"],
+            model_changed_field_names=["integer_field", "string_field"],
+        )
+
+        # Verify the model was updated (should update all matching records based on PK only)
+        saved_model = TestComplexModel.objects.get(pk=model1.pk)
+        self.assertEqual(saved_model.integer_field, 2)
+        self.assertEqual(saved_model.string_field, "updated_value")
+
+    def test_empty_where_clause_with_update_if_null_fields_only(self):
+        """
+        Test another case where where_clause ends up empty in generate_update_query.
+        This happens when all update fields are marked as update_if_null_field_names,
+        and no regular compare_fields exist.
+        """
+        # Create a model with some initial values
+        model1 = TestComplexModel(
+            integer_field=1,
+            string_field="initial_value",
+        )
+        model1.save()
+        
+        # Modify the model
+        model1.integer_field = 2
+        model1.string_field = "updated_value"
+
+        # Update using only update_if_null_field_names
+        # This will result in empty compare_fields because all update fields
+        # are in the ignore_on_compare set, leading to an empty where_clause
+        bulk_update_models(
+            [model1],
+            update_field_names=["integer_field", "string_field"],
+            update_if_null_field_names=["integer_field", "string_field"],
+        )
+
+        # Verify the model was updated appropriately
+        # update_if_null_fields only update when source or destination is NULL
+        saved_model = TestComplexModel.objects.get(pk=model1.pk)
+        # Since neither field was NULL, they shouldn't be updated
+        self.assertEqual(saved_model.integer_field, 1)  # Should remain original value
+        self.assertEqual(saved_model.string_field, "initial_value")  # Should remain original value
+
+    def test_generate_update_query_empty_where_clause_direct(self):
+        """
+        Direct unit test of generate_update_query with empty compare_fields to demonstrate the issue.
+        This test directly calls generate_update_query with empty compare_fields and no update_if_null_fields.
+        """
+        model_meta = TestComplexModel._meta
+        table_name = model_meta.db_table
+        loading_table_name = f"temp_{table_name}"
+        
+        pk_fields = get_fields_from_names(["id"], model_meta)
+        update_fields = get_fields_from_names(["integer_field"], model_meta)
+        compare_fields = []  # Empty compare_fields - this is the key to the issue
+        
+        # This should not raise an exception and should generate valid SQL
+        query = generate_update_query(
+            table_name=table_name,
+            loading_table_name=loading_table_name,
+            pk_fields=pk_fields,
+            update_fields=update_fields,
+            compare_fields=compare_fields,  # Empty!
+            update_if_null_fields=None,
+        )
+        
+        # Convert to string to verify it doesn't contain invalid SQL like "WHERE () AND"
+        query_str = str(query)
+        self.assertNotIn("WHERE () AND", query_str)
+        self.assertIn("WHERE", query_str)
+        # Should only have the join clause in the WHERE - check for the pattern in the Composed structure
+        self.assertIn("temp_test_project_testcomplexmodel", query_str)
+        self.assertIn("test_project_testcomplexmodel", query_str)
+        # Most importantly, verify no empty parentheses before AND
+        self.assertNotIn("() AND", query_str)
