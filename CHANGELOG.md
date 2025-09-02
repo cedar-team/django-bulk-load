@@ -1,6 +1,10 @@
 # CHANGELOG
 
+## v1.4.4 (2025-09-02)
 
+### Fix
+
+* fix(release): fix generating update queries with no distinct conditions
 
 ## v1.4.3 (2023-11-17)
 
