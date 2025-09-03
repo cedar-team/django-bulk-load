@@ -1,12 +1,7 @@
-from datetime import datetime, timezone
-
-from django.db import transaction, connection, connections
+from django.db import transaction, connections
 from django.test import TransactionTestCase
 from django_bulk_load import bulk_select_model_dicts
-from .test_project.models import (
-    TestComplexModel,
-    TestForeignKeyModel,
-)
+from .test_project.models import TestComplexModel
 
 
 class E2ETestBulkSelectModelDictsNoTransaction(TransactionTestCase):
