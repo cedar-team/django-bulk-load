@@ -16,6 +16,7 @@ from .django import (
     get_model_fields,
     get_pk_fields,
     models_to_tsv_buffer,
+    raw_data_to_tsv_buffer,
     records_to_models,
 )
 from .queries import (
@@ -33,6 +34,42 @@ from .queries import (
 from .utils import generate_table_name
 
 logger = logging.getLogger(__name__)
+
+
+def create_temp_table_and_load_raw_data(
+    cursor: CursorWrapper,
+    temp_table_name: str,
+    source_table_name: str,
+    column_names: Sequence[str],
+    raw_data: Iterable[Sequence],
+) -> str:
+    """
+    Create a temporary table and load raw data into it using COPY.
+    
+    :param cursor: Database cursor
+    :param temp_table_name: Name of the temporary table to create
+    :param source_table_name: Source table to copy structure from
+    :param column_names: Column names for the temp table
+    :param raw_data: Raw data rows to insert
+    :return: The temp table name
+    """
+    
+    # Create temp tableå
+    temp_table_query = create_temp_table(
+        temp_table_name=temp_table_name,
+        source_table_name=source_table_name,
+        column_names=column_names,
+    )
+    cursor.execute(temp_table_query)
+
+    # Create TSV buffer
+    tsv_buffer = raw_data_to_tsv_buffer(raw_data)
+    
+    # Bulk insert using COPY
+    copy_sql = copy_query(temp_table_name)
+    cursor.copy_expert(copy_sql, tsv_buffer)
+    
+    return temp_table_name
 
 
 def create_temp_table_and_load(
@@ -584,6 +621,128 @@ def bulk_select_model_dicts(
 
         logger.info(
             "Finished querying models",
+            extra=dict(
+                result_count=len(results),
+                table_name=table_name,
+                duration=monotonic() - start_time,
+            ),
+        )
+
+        return results
+
+    
+    def bulk_select_model_dicts_with_temp_table(
+    *,
+    model_class: Type[Model],
+    filter_field_names: Iterable[str],
+    select_field_names: Iterable[str],
+    filter_data: Iterable[Sequence],
+    skip_filter_transform=False,
+    select_for_update=False
+) -> List[Dict]:
+    """
+    High-performance alternative to bulk_select_model_dicts using temp tables + JOINs.
+    
+    Instead of generating multi-column IN (VALUES ...) queries, this function:
+    1. Creates a temporary table
+    2. Bulk inserts filter data into temp table  
+    3. Uses INNER JOIN for optimal performance
+    
+    Particularly effective for PostgreSQL 16+ where multi-column IN VALUES performance regressed.
+    
+    :param model_class: Model class to query
+    :param filter_field_names: Fields to filter on (used for JOIN condition)
+    :param select_field_names: Fields to return in result dictionaries
+    :param filter_data: Tuples of filter values to search for
+    :param skip_filter_transform: Skip Django field value transformation for performance
+    :param select_for_update: Add FOR UPDATE clause to lock selected rows
+    :return: List of dictionaries matching the filter criteria
+    """
+    if not filter_data:
+        return []
+
+    start_time = monotonic()
+    model_meta = model_class._meta
+    table_name = model_meta.db_table
+
+    filter_fields = get_fields_from_names(filter_field_names, model_meta)
+    select_field_names = {*select_field_names, *filter_field_names}
+    select_fields = get_fields_from_names(select_field_names, model_meta)
+
+    db_name = router.db_for_read(model_class)
+    connection = connections[db_name]
+
+    with connection.cursor() as cursor, transaction.atomic(using=db_name):
+        # Transform filter data
+        filter_data = list(filter_data)
+        if not skip_filter_transform:
+            filter_data_transformed = []
+            for filter_vals in filter_data:
+                filter_data_transformed.append(
+                    [
+                        django_field_to_query_value(filter_fields[i], value)
+                        for i, value in enumerate(filter_vals)
+                    ]
+                )
+            filter_data = filter_data_transformed
+
+        logger.info(
+            "Starting temp table bulk select",
+            extra=dict(filter_count=len(filter_data), table_name=table_name),
+        )
+
+        # Generate unique temp table name using existing utility
+        temp_table_name = generate_table_name(source_table_name=f"{table_name}_search")
+        
+        # Create temp table and load data using reusable helper
+        create_temp_table_and_load_raw_data(
+            cursor=cursor,
+            temp_table_name=temp_table_name,
+            source_table_name=table_name,
+            column_names=[field.column for field in filter_fields],
+            raw_data=filter_data,
+        )
+
+        # Generate JOIN query using existing Cedar utilities
+        join_query = generate_select_query(
+            table_name=table_name,
+            loading_table_name=temp_table_name,
+            join_fields=filter_fields,
+            select_fields=select_fields,
+        )
+        
+        # Add WHERE deleted = false if model has deleted field
+        if hasattr(model_class, '_meta') and any(f.name == 'deleted' for f in model_class._meta.fields):
+            join_query = SQL("{base_query} WHERE {table_name}.deleted = false").format(
+                base_query=join_query,
+                table_name=Identifier(table_name)
+            )
+        
+        # Add FOR UPDATE if requested
+        if select_for_update:
+            join_query = SQL("{base_query} FOR UPDATE").format(base_query=join_query)
+
+        # Execute the JOIN query
+        cursor.execute(join_query)
+        columns = [col[0] for col in cursor.description]
+
+        # Transform results back to Django field values (matching original function exactly)
+        select_field_map = {field.column: field for field in select_fields}
+        results = []
+        for row in cursor.fetchall():
+            results.append(
+                {
+                    select_field_map[column]
+                    .attname: select_field_map[column]
+                    .from_db_value(value, expression=None, connection=connection)
+                    if hasattr(select_field_map[column], "from_db_value")
+                    else value
+                    for column, value in zip(columns, row)
+                }
+            )
+
+        logger.info(
+            "Finished temp table bulk select",
             extra=dict(
                 result_count=len(results),
                 table_name=table_name,

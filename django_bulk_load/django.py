@@ -59,6 +59,27 @@ def _default_model_to_value(model, field, connection):
     return field.get_db_prep_save(field_val, connection=connection)
 
 
+def raw_data_to_tsv_buffer(raw_data: Iterable[Iterable[Any]]) -> StringIO:
+    """
+    Convert raw data (sequences of values) to TSV buffer for COPY operations.
+    
+    :param raw_data: Iterable of sequences containing raw values
+    :return: StringIO buffer containing TSV data
+    """
+    buffer = StringIO()
+    tsv_writer = csv.writer(buffer, delimiter="\t", lineterminator="\n")
+    for row in raw_data:
+        processed_row = []
+        for val in row:
+            if val is None:
+                processed_row.append(NULL_CHARACTER)
+            else:
+                processed_row.append(str(val))
+        tsv_writer.writerow(processed_row)
+    buffer.seek(0)
+    return buffer
+
+
 def models_to_tsv_buffer(
     models: Iterable[Any],
     include_fields: Iterable[models.Field],
