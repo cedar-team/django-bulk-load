@@ -23,13 +23,13 @@ jobs:
           - 5432:5432
     
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
         with:
           # we actually need "github.event.pull_request.commits + 1" commit
           fetch-depth: 0
       
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@98f2ad02fd48d057ee3b4d4f66525b231c3e52b6 # v3.1.2
         with:
           python-version: '3.8'
       
@@ -39,7 +39,7 @@ jobs:
           pip install -e .[test]
       
       - name: Node setup
-        uses: actions/setup-node@v2.1.0
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
       
       - name: Run unit tests
         run: ./test.sh
@@ -49,3 +49,6 @@ jobs:
           DATABASE_USER: postgres
           DATABASE_PASSWORD: postgres
           DATABASE_PORT: 5432
+
+
+
