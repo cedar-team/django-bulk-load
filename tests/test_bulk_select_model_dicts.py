@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 
-from django.db import transaction, connection, connections
 from django.test import TestCase
 from django_bulk_load import bulk_select_model_dicts
 from .test_project.models import (

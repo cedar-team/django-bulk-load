@@ -27,9 +27,9 @@ setuptools.setup(
     python_requires=">=3.6",
     install_requires=[
         "django>=2.2",
-        "psycopg2>=2.8.6"
     ],
     extras_require={
-        'test': []
+        "psycopg2": ["psycopg2>=2.8.6"],
+        "psycopg2-binary": ["psycopg2-binary>=2.8.6"],
     },
 )
